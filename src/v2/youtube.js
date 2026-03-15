@@ -70,7 +70,7 @@ if (Chat.info.yt) {
 	yt_socket.onmessage = function (data) {
 		data = JSON.parse(data.data)
 		if (data.info == "deleted") {
-			Chat.clearMessage(String(data.message))
+			Chat.clearMessage(String(data.message).replace(/\./g, ""))
 		}
 		else if (data.info == "banned") {
 			setTimeout(function () {
