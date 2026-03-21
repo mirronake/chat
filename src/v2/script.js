@@ -92,10 +92,7 @@ Chat = {
     specialBadges: {},
     ffzapBadges: null,
     bttvBadges: null,
-    seventvBadges: [],
-    seventvPaints: {},
     seventvCheckers: {},
-    seventvPersonalEmotes: {},
     seventvNoUsers: {},
     seventvNonSubs: {},
     colors: {},
@@ -147,6 +144,9 @@ Chat = {
         ? $.QueryString.off_commands.toLowerCase().split(",")
         : [],
     scale: "scale" in $.QueryString ? parseFloat($.QueryString.scale) : 1,
+    seventvPaints: (() => { try { return JSON.parse(localStorage.getItem("seventv_paints")) || {}; } catch (e) { return {}; } })(),
+    seventvBadges: (() => { try { return JSON.parse(localStorage.getItem("seventv_badges")) || {}; } catch (e) { return {}; } })(),
+    seventvPersonalEmotes: (() => { try { return JSON.parse(localStorage.getItem("seventv_personal_emotes")) || {}; } catch (e) { return {}; } })(),
     showPronouns:
       "pronouns" in $.QueryString
         ? $.QueryString.pronouns.toLowerCase() === "true"
@@ -609,8 +609,13 @@ Chat = {
           }
         });
       }
-      
-      Chat.info.seventvPersonalEmotes[channelID] = newEmotes;
+
+      if (Object.keys(newEmotes).length === 0) {
+        delete Chat.info.seventvPersonalEmotes[channelID];
+      } else {
+        Chat.info.seventvPersonalEmotes[channelID] = newEmotes;
+      }
+      localStorage.setItem("seventv_personal_emotes", JSON.stringify(Chat.info.seventvPersonalEmotes));
     } catch (error) {
       // console.error("Error loading personal emotes: ", error);
     }
@@ -1158,7 +1163,9 @@ Chat = {
   },
 
   loadUserBadges: async function (nick, userId) {
-    if (!Chat.info.userBadges[nick]) Chat.info.userBadges[nick] = [];
+    if (!Chat.info.userBadges[nick]) {
+      Chat.info.userBadges[nick] = Chat.info.seventvBadges[nick] ? [Chat.info.seventvBadges[nick]] : [];
+    }
     if (!Chat.info.specialBadges[nick]) Chat.info.specialBadges[nick] = [];
 
     var newSpecialBadges = [];
@@ -1218,10 +1225,16 @@ Chat = {
       var sevenInfo = await getUserBadgeAndPaintInfo(userId);
       if (sevenInfo && sevenInfo.success) {
         if (sevenInfo.badge) {
-          newUserBadges.push({
+          var badgeObj = {
             description: sevenInfo.badge.tooltip,
             url: "https://cdn.7tv.app/badge/" + sevenInfo.badge.id + "/3x",
-          });
+          };
+          newUserBadges.push(badgeObj);
+          Chat.info.seventvBadges[nick] = badgeObj;
+          localStorage.setItem("seventv_badges", JSON.stringify(Chat.info.seventvBadges));
+        } else {
+          delete Chat.info.seventvBadges[nick];
+          localStorage.setItem("seventv_badges", JSON.stringify(Chat.info.seventvBadges));
         }
       } else {
         // Failed or network error: retain the old 7tv badge if there was one
@@ -1283,6 +1296,7 @@ Chat = {
               filter: dropShadows,
             };
             Chat.info.seventvPaints[nick] = [userPaint];
+            localStorage.setItem("seventv_paints", JSON.stringify(Chat.info.seventvPaints));
           } else {
             if (seventvPaintInfo.shadows) {
               var dropShadows = createDropShadows(seventvPaintInfo.shadows);
@@ -1301,10 +1315,12 @@ Chat = {
             }
 
             Chat.info.seventvPaints[nick] = [userPaint];
+            localStorage.setItem("seventv_paints", JSON.stringify(Chat.info.seventvPaints));
           }
         } else {
           // console.log("No 7tv paint info found for", userId);
-          Chat.info.seventvPaints[nick] = [];
+          delete Chat.info.seventvPaints[nick];
+          localStorage.setItem("seventv_paints", JSON.stringify(Chat.info.seventvPaints));
         }
       } catch (error) {
         // console.error("Error fetching paint info:", error);
