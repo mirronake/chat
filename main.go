@@ -68,11 +68,9 @@ type SharedChatEvent struct {
 	UserInput    string                  `json:"user_input,omitempty"`
 }
 
-// EventSubChannel tracks an EventSub WS connection for one broadcaster
+// EventSubChannel tracks SSE clients and PubSub for one broadcaster
 type EventSubChannel struct {
 	ChannelID   string
-	Conn        *websocket.Conn
-	SessionID   string
 	SSEClients  map[chan SharedChatEvent]bool
 	SSEMutex    sync.Mutex
 	Cancel      context.CancelFunc
@@ -84,6 +82,23 @@ var (
 	eventSubChannels = make(map[string]*EventSubChannel)
 	eventSubMutex    sync.RWMutex
 )
+
+// ============================================================
+// Shared EventSub WebSocket Pool
+// ============================================================
+// Twitch limits EventSub to ~3 WS connections per client ID.
+// Instead of one connection per channel, we use a single shared
+// connection that multiplexes subscriptions for all channels.
+
+type eventSubPoolT struct {
+	mu        sync.Mutex
+	conn      *websocket.Conn
+	sessionID string
+	ready     chan struct{} // closed when sessionID is available
+	running   bool
+}
+
+var esPool = &eventSubPoolT{}
 
 func init() {
 	// Create an AWS session
@@ -907,7 +922,7 @@ func broadcastToSSEClients(esc *EventSubChannel, event SharedChatEvent) {
 	}
 }
 
-// startEventSubForChannel connects to Twitch EventSub WS and subscribes to shared chat events
+// startEventSubForChannel registers a channel and subscribes via the shared pool
 func startEventSubForChannel(channelID string) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -926,78 +941,108 @@ func startEventSubForChannel(channelID string) {
 	eventSubChannels[channelID] = esc
 	eventSubMutex.Unlock()
 
-	// Start PubSub for channel point redemptions alongside EventSub
+	// Start PubSub for channel point redemptions
 	go startPubSubForChannel(ctx, esc, channelID)
 
-	defer func() {
-		eventSubMutex.Lock()
-		delete(eventSubChannels, channelID)
-		eventSubMutex.Unlock()
-		// Close PubSub connection
-		esc.PubSubMutex.Lock()
-		if esc.PubSubConn != nil {
-			esc.PubSubConn.Close()
-		}
-		esc.PubSubMutex.Unlock()
-		cancel()
-		log.Printf("[TEMP DEBUG][SharedChat] EventSub stopped for channel %s", channelID)
-	}()
+	log.Printf("[TEMP DEBUG][SharedChat] Starting EventSub for channel %s via shared pool", channelID)
 
-	connectURL := "wss://eventsub.wss.twitch.tv/ws"
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		log.Printf("[TEMP DEBUG][SharedChat] Connecting to EventSub WS for channel %s at %s", channelID, connectURL)
-
-		conn, _, err := websocket.DefaultDialer.Dial(connectURL, nil)
-		if err != nil {
-			log.Printf("[TEMP DEBUG][SharedChat] EventSub WS connection error for %s: %v", channelID, err)
-			time.Sleep(5 * time.Second)
-			connectURL = "wss://eventsub.wss.twitch.tv/ws" // Reset to default URL on error
-			continue
-		}
-		esc.Conn = conn
-
-		// Read welcome message
-		err = processEventSubMessages(ctx, esc, conn, channelID, &connectURL)
-		conn.Close()
-
-		if err != nil {
-			log.Printf("[TEMP DEBUG][SharedChat] EventSub WS error for %s: %v, reconnecting...", channelID, err)
-			time.Sleep(5 * time.Second)
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
+	// Subscribe via the shared EventSub pool
+	if err := esPool.subscribeChannel(channelID); err != nil {
+		log.Printf("[TEMP DEBUG][SharedChat] Error subscribing channel %s via pool: %v", channelID, err)
 	}
 }
 
-// processEventSubMessages reads and handles messages from the EventSub WS
-func processEventSubMessages(ctx context.Context, esc *EventSubChannel, conn *websocket.Conn, channelID string, connectURL *string) error {
-	keepaliveTimeout := 30 * time.Second // Default, updated from welcome message
+// ensureRunning starts the shared EventSub WS pool if not already running
+func (p *eventSubPoolT) ensureRunning() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.running {
+		return
+	}
+	p.running = true
+	p.ready = make(chan struct{})
+	go p.run()
+}
+
+// waitForSession blocks until the pool has a valid session ID
+func (p *eventSubPoolT) waitForSession(timeout time.Duration) (string, error) {
+	p.mu.Lock()
+	ready := p.ready
+	p.mu.Unlock()
+
+	select {
+	case <-ready:
+		p.mu.Lock()
+		sid := p.sessionID
+		p.mu.Unlock()
+		if sid == "" {
+			return "", fmt.Errorf("pool session not available")
+		}
+		return sid, nil
+	case <-time.After(timeout):
+		return "", fmt.Errorf("timeout waiting for EventSub pool session")
+	}
+}
+
+// subscribeChannel adds EventSub subscriptions for a channel via the shared pool
+func (p *eventSubPoolT) subscribeChannel(channelID string) error {
+	p.ensureRunning()
+
+	sid, err := p.waitForSession(30 * time.Second)
+	if err != nil {
+		return err
+	}
+
+	return createSharedChatSubscriptions(channelID, sid)
+}
+
+// run manages the persistent shared EventSub WebSocket connection
+func (p *eventSubPoolT) run() {
+	connectURL := "wss://eventsub.wss.twitch.tv/ws"
 
 	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
+		log.Printf("[TEMP DEBUG][SharedChat] Pool: connecting to %s", connectURL)
+
+		p.mu.Lock()
+		p.sessionID = ""
+		p.ready = make(chan struct{})
+		p.mu.Unlock()
+
+		conn, _, err := websocket.DefaultDialer.Dial(connectURL, nil)
+		if err != nil {
+			log.Printf("[TEMP DEBUG][SharedChat] Pool: WS connection error: %v", err)
+			time.Sleep(5 * time.Second)
+			connectURL = "wss://eventsub.wss.twitch.tv/ws"
+			continue
 		}
 
+		p.mu.Lock()
+		p.conn = conn
+		p.mu.Unlock()
+
+		err = p.readMessages(conn, &connectURL)
+		conn.Close()
+
+		if err != nil {
+			log.Printf("[TEMP DEBUG][SharedChat] Pool: WS error: %v, reconnecting...", err)
+		}
+
+		time.Sleep(2 * time.Second)
+		connectURL = "wss://eventsub.wss.twitch.tv/ws" // Reset on error
+	}
+}
+
+// readMessages processes messages from the shared EventSub WebSocket
+func (p *eventSubPoolT) readMessages(conn *websocket.Conn, connectURL *string) error {
+	keepaliveTimeout := 30 * time.Second
+
+	for {
 		conn.SetReadDeadline(time.Now().Add(keepaliveTimeout + 10*time.Second))
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			return fmt.Errorf("read error: %w", err)
 		}
 
-		// Parse the EventSub message
 		var msg struct {
 			Metadata struct {
 				MessageType string `json:"message_type"`
@@ -1005,7 +1050,7 @@ func processEventSubMessages(ctx context.Context, esc *EventSubChannel, conn *we
 			Payload json.RawMessage `json:"payload"`
 		}
 		if err := json.Unmarshal(message, &msg); err != nil {
-			log.Printf("[TEMP DEBUG][SharedChat] Error parsing EventSub message: %v", err)
+			log.Printf("[TEMP DEBUG][SharedChat] Pool: error parsing message: %v", err)
 			continue
 		}
 
@@ -1021,21 +1066,22 @@ func processEventSubMessages(ctx context.Context, esc *EventSubChannel, conn *we
 				return fmt.Errorf("error parsing welcome: %w", err)
 			}
 
-			esc.SessionID = payload.Session.ID
 			if payload.Session.KeepaliveTimeoutSeconds > 0 {
 				keepaliveTimeout = time.Duration(payload.Session.KeepaliveTimeoutSeconds) * time.Second
 			}
 
-			log.Printf("[TEMP DEBUG][SharedChat] EventSub welcome for %s, session=%s, keepalive=%ds",
-				channelID, esc.SessionID, payload.Session.KeepaliveTimeoutSeconds)
+			p.mu.Lock()
+			p.sessionID = payload.Session.ID
+			close(p.ready)
+			p.mu.Unlock()
 
-			// Create subscriptions
-			if err := createSharedChatSubscriptions(channelID, esc.SessionID); err != nil {
-				return fmt.Errorf("error creating subscriptions: %w", err)
-			}
+			log.Printf("[TEMP DEBUG][SharedChat] Pool: connected, session=%s, keepalive=%ds",
+				payload.Session.ID, payload.Session.KeepaliveTimeoutSeconds)
+
+			// Re-subscribe all active channels on reconnect
+			go p.resubscribeAll()
 
 		case "session_keepalive":
-			// Just reset the deadline, already handled by SetReadDeadline
 			continue
 
 		case "session_reconnect":
@@ -1045,18 +1091,71 @@ func processEventSubMessages(ctx context.Context, esc *EventSubChannel, conn *we
 				} `json:"session"`
 			}
 			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-				log.Printf("[TEMP DEBUG][SharedChat] Error parsing reconnect: %v", err)
+				log.Printf("[TEMP DEBUG][SharedChat] Pool: error parsing reconnect: %v", err)
 				continue
 			}
-			log.Printf("[TEMP DEBUG][SharedChat] EventSub reconnect for %s to %s", channelID, payload.Session.ReconnectURL)
+			log.Printf("[TEMP DEBUG][SharedChat] Pool: reconnecting to %s", payload.Session.ReconnectURL)
 			*connectURL = payload.Session.ReconnectURL
-			return nil // Return to trigger reconnection with new URL
+			return nil
 
 		case "notification":
-			handleEventSubNotification(esc, msg.Payload)
+			p.routeNotification(msg.Payload)
 
 		case "revocation":
-			log.Printf("[TEMP DEBUG][SharedChat] EventSub subscription revoked for %s", channelID)
+			log.Printf("[TEMP DEBUG][SharedChat] Pool: subscription revoked")
+		}
+	}
+}
+
+// routeNotification sends an EventSub notification to the correct channel's handler
+func (p *eventSubPoolT) routeNotification(payload json.RawMessage) {
+	var notif struct {
+		Subscription struct {
+			Condition struct {
+				BroadcasterUserID string `json:"broadcaster_user_id"`
+			} `json:"condition"`
+		} `json:"subscription"`
+	}
+	if err := json.Unmarshal(payload, &notif); err != nil {
+		log.Printf("[TEMP DEBUG][SharedChat] Pool: error parsing notification routing: %v", err)
+		return
+	}
+
+	channelID := notif.Subscription.Condition.BroadcasterUserID
+
+	eventSubMutex.RLock()
+	esc, exists := eventSubChannels[channelID]
+	eventSubMutex.RUnlock()
+
+	if !exists {
+		log.Printf("[TEMP DEBUG][SharedChat] Pool: notification for unknown channel %s, ignoring", channelID)
+		return
+	}
+
+	handleEventSubNotification(esc, payload)
+}
+
+// resubscribeAll re-creates subscriptions for all active channels (after reconnect)
+func (p *eventSubPoolT) resubscribeAll() {
+	p.mu.Lock()
+	sid := p.sessionID
+	p.mu.Unlock()
+	if sid == "" {
+		return
+	}
+
+	eventSubMutex.RLock()
+	channelIDs := make([]string, 0, len(eventSubChannels))
+	for id := range eventSubChannels {
+		channelIDs = append(channelIDs, id)
+	}
+	eventSubMutex.RUnlock()
+
+	log.Printf("[TEMP DEBUG][SharedChat] Pool: re-subscribing %d channels", len(channelIDs))
+
+	for _, channelID := range channelIDs {
+		if err := createSharedChatSubscriptions(channelID, sid); err != nil {
+			log.Printf("[TEMP DEBUG][SharedChat] Pool: error re-subscribing channel %s: %v", channelID, err)
 		}
 	}
 }
@@ -1402,7 +1501,7 @@ func handlePubSubMessage(esc *EventSubChannel, data json.RawMessage, channelID s
 	broadcastToSSEClients(esc, event)
 }
 
-// stopEventSubForChannel stops the EventSub WS for a channel
+// stopEventSubForChannel stops EventSub + PubSub for a channel
 func stopEventSubForChannel(channelID string) {
 	eventSubMutex.RLock()
 	esc, exists := eventSubChannels[channelID]
@@ -1413,10 +1512,17 @@ func stopEventSubForChannel(channelID string) {
 	}
 
 	log.Printf("[TEMP DEBUG][SharedChat] Stopping EventSub for channel %s", channelID)
-	esc.Cancel()
-	if esc.Conn != nil {
-		esc.Conn.Close()
+	esc.Cancel() // Stops PubSub goroutine
+	// Close PubSub connection
+	esc.PubSubMutex.Lock()
+	if esc.PubSubConn != nil {
+		esc.PubSubConn.Close()
 	}
+	esc.PubSubMutex.Unlock()
+
+	eventSubMutex.Lock()
+	delete(eventSubChannels, channelID)
+	eventSubMutex.Unlock()
 }
 
 // ============================================================
