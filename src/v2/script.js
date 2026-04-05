@@ -95,6 +95,7 @@ Chat = {
     seventvCheckers: {},
     seventvNoUsers: {},
     seventvNonSubs: {},
+    seventvSessionRefreshed: {},
     colors: {},
     chatterinoBadges: null,
     cheers: {},
@@ -2915,6 +2916,22 @@ Chat = {
                 !Chat.info.seventvNonSubs[message.tags["user-id"]]
               ) {
                 Chat.loadUserPaints(nick, message.tags["user-id"]);
+              }
+
+              // First message in session: refresh 7TV data even if cached from a previous session
+              if (!Chat.info.seventvSessionRefreshed[message.tags["user-id"]]) {
+                Chat.info.seventvSessionRefreshed[message.tags["user-id"]] = true;
+                if (
+                  Chat.info.seventvPaints[nick] ||
+                  Chat.info.seventvBadges[nick] ||
+                  Chat.info.seventvPersonalEmotes[message.tags["user-id"]]
+                ) {
+                  delete Chat.info.seventvNoUsers[message.tags["user-id"]];
+                  delete Chat.info.seventvNonSubs[message.tags["user-id"]];
+                  Chat.loadUserBadges(nick, message.tags["user-id"]);
+                  Chat.loadUserPaints(nick, message.tags["user-id"]);
+                  Chat.loadPersonalEmotes(message.tags["user-id"]);
+                }
               }
 
               // If this is a channel point redeem, defer rendering until PubSub provides reward metadata
