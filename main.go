@@ -91,11 +91,12 @@ var (
 // connection that multiplexes subscriptions for all channels.
 
 type eventSubPoolT struct {
-	mu        sync.Mutex
-	conn      *websocket.Conn
-	sessionID string
-	ready     chan struct{} // closed when sessionID is available
-	running   bool
+	mu         sync.Mutex
+	conn       *websocket.Conn
+	sessionID  string
+	ready      chan struct{} // closed when sessionID is available
+	running    bool
+	subscribed map[string]bool // channels subscribed in current session
 }
 
 var esPool = &eventSubPoolT{}
@@ -993,7 +994,24 @@ func (p *eventSubPoolT) subscribeChannel(channelID string) error {
 		return err
 	}
 
-	return createSharedChatSubscriptions(channelID, sid)
+	// Skip if already subscribed in this session (prevents race with resubscribeAll)
+	p.mu.Lock()
+	if p.subscribed[channelID] {
+		p.mu.Unlock()
+		log.Printf("[TEMP DEBUG][SharedChat] Pool: channel %s already subscribed in this session, skipping", channelID)
+		return nil
+	}
+	p.mu.Unlock()
+
+	err = createSharedChatSubscriptions(channelID, sid)
+	if err == nil {
+		p.mu.Lock()
+		if p.subscribed != nil {
+			p.subscribed[channelID] = true
+		}
+		p.mu.Unlock()
+	}
+	return err
 }
 
 // run manages the persistent shared EventSub WebSocket connection
@@ -1006,6 +1024,7 @@ func (p *eventSubPoolT) run() {
 		p.mu.Lock()
 		p.sessionID = ""
 		p.ready = make(chan struct{})
+		p.subscribed = make(map[string]bool)
 		p.mu.Unlock()
 
 		conn, _, err := websocket.DefaultDialer.Dial(connectURL, nil)
@@ -1154,6 +1173,15 @@ func (p *eventSubPoolT) resubscribeAll() {
 	log.Printf("[TEMP DEBUG][SharedChat] Pool: re-subscribing %d channels", len(channelIDs))
 
 	for _, channelID := range channelIDs {
+		// Mark as subscribed first to prevent race with subscribeChannel
+		p.mu.Lock()
+		if p.subscribed[channelID] {
+			p.mu.Unlock()
+			continue
+		}
+		p.subscribed[channelID] = true
+		p.mu.Unlock()
+
 		if err := createSharedChatSubscriptions(channelID, sid); err != nil {
 			log.Printf("[TEMP DEBUG][SharedChat] Pool: error re-subscribing channel %s: %v", channelID, err)
 		}
@@ -1218,7 +1246,27 @@ func createSharedChatSubscriptions(channelID, sessionID string) error {
 			resp.Body.Close()
 		}
 
-		if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			log.Printf("[TEMP DEBUG][SharedChat] Subscription %s rate-limited, retrying after backoff", subType)
+			time.Sleep(5 * time.Second)
+			// Rebuild request for retry
+			retryReq, _ := http.NewRequest("POST", "https://api.twitch.tv/helix/eventsub/subscriptions", bytes.NewReader(bodyBytes))
+			retryReq.Header.Set("Authorization", "Bearer "+accessToken)
+			retryReq.Header.Set("Client-Id", clientID)
+			retryReq.Header.Set("Content-Type", "application/json")
+			resp2, err2 := http.DefaultClient.Do(retryReq)
+			if err2 != nil {
+				log.Printf("[TEMP DEBUG][SharedChat] Subscription %s retry failed: %v", subType, err2)
+			} else {
+				retryBody, _ := io.ReadAll(resp2.Body)
+				resp2.Body.Close()
+				if resp2.StatusCode != http.StatusAccepted && resp2.StatusCode != http.StatusOK {
+					log.Printf("[TEMP DEBUG][SharedChat] Subscription %s retry failed (%d): %s", subType, resp2.StatusCode, string(retryBody))
+				} else {
+					log.Printf("[TEMP DEBUG][SharedChat] Subscription %s created for channel %s (after retry)", subType, channelID)
+				}
+			}
+		} else if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 			log.Printf("[TEMP DEBUG][SharedChat] Subscription %s failed (%d): %s", subType, resp.StatusCode, string(respBody))
 		} else {
 			log.Printf("[TEMP DEBUG][SharedChat] Subscription %s created for channel %s", subType, channelID)
