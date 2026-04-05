@@ -1191,7 +1191,6 @@ func (p *eventSubPoolT) resubscribeAll() {
 // createSharedChatSubscriptions creates the shared chat EventSub subscriptions
 func createSharedChatSubscriptions(channelID, sessionID string) error {
 	subTypes := []string{
-		"channel.shared_chat.begin",
 		"channel.shared_chat.update",
 		"channel.shared_chat.end",
 	}
@@ -1306,8 +1305,6 @@ func handleEventSubNotification(esc *EventSubChannel, payload json.RawMessage) {
 
 	var eventType string
 	switch notif.Subscription.Type {
-	case "channel.shared_chat.begin":
-		eventType = "begin"
 	case "channel.shared_chat.update":
 		eventType = "update"
 	case "channel.shared_chat.end":
@@ -1329,6 +1326,12 @@ func handleEventSubNotification(esc *EventSubChannel, payload json.RawMessage) {
 		eventType, eventData.SessionID, eventData.HostBroadcasterUserLogin, len(eventData.Participants))
 
 	broadcastToSSEClients(esc, event)
+
+	// When shared chat ends, immediately stop EventSub for this channel
+	if eventType == "end" {
+		log.Printf("[TEMP DEBUG][SharedChat] Shared chat ended for channel %s, stopping EventSub", esc.ChannelID)
+		go stopEventSubForChannel(esc.ChannelID)
+	}
 }
 
 // ============================================================

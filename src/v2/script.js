@@ -211,6 +211,7 @@ Chat = {
     pronounTypes: {},
     // Shared Chat state
     sharedChatActive: false,
+    sharedChatInitializing: false,
     sharedChatChannels: {},  // { channelID: { name, emotes, ffzModBadge, ffzVipBadge, profileImage, sevenConn } }
     sharedChatEventSource: null,
   },
@@ -318,7 +319,7 @@ Chat = {
       return;
     }
 
-    // Subscribe to shared chat events
+    // Subscribe to shared chat events (update and end only)
     fetch(`/api/shared-chat/subscribe?channel_id=${Chat.info.channelID}`);
 
     // Connect to SSE endpoint
@@ -335,10 +336,8 @@ Chat = {
             console.log('[TEMP DEBUG][SharedChat] SSE connected for channel', Chat.info.channelID);
             break;
 
-          case 'begin':
           case 'update': {
-            Chat.info.sharedChatActive = true;
-            console.log(`[TEMP DEBUG][SharedChat] Session ${data.type}: host=${data.host_login}, participants=${data.participants?.length}`);
+            console.log(`[TEMP DEBUG][SharedChat] Session update: host=${data.host_login}, participants=${data.participants?.length}`);
 
             // Load data for new participant channels
             const currentChannelIDs = Object.keys(Chat.info.sharedChatChannels);
@@ -354,13 +353,11 @@ Chat = {
               }
             }
 
-            // On update, cleanup channels no longer in participant list
-            if (data.type === 'update') {
-              for (const channelID of currentChannelIDs) {
-                if (!newParticipantIDs.includes(channelID)) {
-                  console.log(`[TEMP DEBUG][SharedChat] Channel ${channelID} left session, cleaning up`);
-                  Chat.cleanupSharedChatChannel(channelID);
-                }
+            // Cleanup channels no longer in participant list
+            for (const channelID of currentChannelIDs) {
+              if (!newParticipantIDs.includes(channelID)) {
+                console.log(`[TEMP DEBUG][SharedChat] Channel ${channelID} left session, cleaning up`);
+                Chat.cleanupSharedChatChannel(channelID);
               }
             }
             break;
@@ -644,17 +641,26 @@ Chat = {
       Chat.cleanupSharedChatChannel(channelID);
     }
     Chat.info.sharedChatActive = false;
+    Chat.info.sharedChatInitializing = false;
+    // Close SSE connection
+    if (Chat.info.sharedChatEventSource) {
+      Chat.info.sharedChatEventSource.close();
+      Chat.info.sharedChatEventSource = null;
+    }
   },
 
-  // Check if channel is already in a shared chat session on load
-  checkExistingSharedChat: function () {
+  // Initialize shared chat when an IRC message with source-room-id is detected
+  initSharedChatFromIRC: function () {
     if (!Chat.info.channelID) return;
+    if (Chat.info.sharedChatActive || Chat.info.sharedChatInitializing) return;
 
-    console.log('[TEMP DEBUG][SharedChat] Checking for existing shared chat session...');
+    Chat.info.sharedChatInitializing = true;
+    console.log('[TEMP DEBUG][SharedChat] Detected shared chat via IRC, fetching session info...');
+
     TwitchAPI('/shared_chat/session?broadcaster_id=' + Chat.info.channelID).done(function (res) {
       if (res.data && res.data.length > 0) {
         const session = res.data[0];
-        console.log('[TEMP DEBUG][SharedChat] Found existing session:', session.session_id, 'with', session.participants.length, 'participants');
+        console.log('[TEMP DEBUG][SharedChat] Found session:', session.session_id, 'with', session.participants.length, 'participants');
 
         Chat.info.sharedChatActive = true;
 
@@ -662,7 +668,7 @@ Chat = {
         for (const participant of session.participants) {
           if (participant.broadcaster_id === Chat.info.channelID) continue;
           if (!Chat.info.sharedChatChannels[participant.broadcaster_id]) {
-            console.log('[TEMP DEBUG][SharedChat] Loading existing participant:', participant.broadcaster_id);
+            console.log('[TEMP DEBUG][SharedChat] Loading participant:', participant.broadcaster_id);
             // We need the login name — fetch it from the Twitch API
             TwitchAPI('/users?id=' + participant.broadcaster_id).done(function (userRes) {
               if (userRes.data && userRes.data[0]) {
@@ -671,9 +677,16 @@ Chat = {
             });
           }
         }
+
+        // Subscribe to EventSub for update/end events via SSE
+        Chat.startSharedChatListener();
       } else {
-        console.log('[TEMP DEBUG][SharedChat] No existing shared chat session found');
+        console.log('[TEMP DEBUG][SharedChat] No shared chat session found despite source-room-id in IRC');
+        Chat.info.sharedChatInitializing = false;
       }
+    }).fail(function () {
+      console.error('[TEMP DEBUG][SharedChat] Failed to fetch shared chat session');
+      Chat.info.sharedChatInitializing = false;
     });
   },
 
@@ -861,10 +874,6 @@ Chat = {
         Chat.info.channelID = res.data[0].id;
         Chat.loadEmotes(Chat.info.channelID);
         seven_ws(Chat.info.channel);
-
-        // TEMPORARY DEBUG - Start shared chat SSE listener and check for existing session
-        Chat.startSharedChatListener();
-        Chat.checkExistingSharedChat();
 
         client_id = res.client_id;
 
@@ -2932,6 +2941,11 @@ Chat = {
                   Chat.loadUserPaints(nick, message.tags["user-id"]);
                   Chat.loadPersonalEmotes(message.tags["user-id"]);
                 }
+              }
+
+              // Detect shared chat via source-room-id in IRC message
+              if (message.tags["source-room-id"] && message.tags["source-room-id"] !== message.tags["room-id"]) {
+                Chat.initSharedChatFromIRC();
               }
 
               // If this is a channel point redeem, defer rendering until PubSub provides reward metadata
