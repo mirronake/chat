@@ -30,10 +30,11 @@ YouTube WebSocket service (youtube-websocket/, port 9905)
     /s/:id  – stream WebSocket
 ```
 
-**Runtime config files** (must exist before running):
+**Runtime data files** (stored in `data/`, must exist before running):
 
-- `tokens.json` – Twitch OAuth tokens, client ID/secret, admin password
-- `active.json` – auto-created; tracks recently active channels
+- `data/tokens.json` – Twitch OAuth tokens, client ID/secret, admin password
+- `data/active.json` – auto-created; tracks recently active channels
+- `data/yt-colors.json` – YouTube username color overrides
 
 ## Build & Run
 
@@ -50,6 +51,9 @@ cd youtube-websocket
 bun run src/index.ts    # start server
 bun run testchannel     # run channel tests
 bun run teststream      # run stream tests
+
+# Docker (builds everything and runs)
+docker compose up --build
 ```
 
 ## Conventions
@@ -69,7 +73,10 @@ bun run teststream      # run stream tests
 ### Go backend
 
 - All logic lives in `main.go` (single-file pattern – keep it that way unless there's a strong reason to split).
-- Tokens are loaded from `tokens.json` at startup via `loadTokens()`. The Twitch access token auto-refreshes every 120 min via `refreshTokenLoop()`.
+- Tokens are loaded from `data/tokens.json` at startup via `loadTokens()`. The Twitch access token auto-refreshes every 120 min via `refreshTokenLoop()`.
+- All persistent data files live in `data/` (tokens, active channels, yt-colors, error logs).
+- Admin HTML pages (`login.html`, `admin-hub.html`, `admin.html`, `yt-colors-admin.html`) live in `src/` and are copied to `dist/` by webpack. Go templates load them from `dist/`.
+- The YouTube WS relay host is configurable via `YOUTUBE_WS_HOST` env var (defaults to `localhost:9905`).
 - Origin check (`isRequestFromYourWebsite`) gates `/ws` and `/api/tts` – do not remove this.
 - Shared Chat uses Twitch EventSub WebSocket → SSE fan-out. Debug logs are prefixed `[TEMP DEBUG][SharedChat]` – these should be cleaned up before production.
 
@@ -92,4 +99,10 @@ bun run teststream      # run stream tests
 | `src/script.js`                  | Config page logic                      |
 | `src/style.css`                  | Config page styles                     |
 | `youtube-websocket/src/index.ts` | Bun/Elysia entrypoint                  |
-| `tokens.json`                    | Runtime secrets (not committed)        |
+| `src/login.html`                 | Admin login page (Go template)         |
+| `src/admin-hub.html`             | Admin hub page (Go template)           |
+| `src/admin.html`                 | Active channels admin (Go template)    |
+| `src/yt-colors-admin.html`       | YT colors admin page (Go template)     |
+| `data/tokens.json`               | Runtime secrets (not committed)        |
+| `Dockerfile`                     | Multi-stage Docker build               |
+| `docker-compose.yml`             | Docker Compose with volume mounts      |

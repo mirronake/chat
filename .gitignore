@@ -5,6 +5,7 @@ t/
 *.exe
 tokens.json
 active.json
+data/
 dist/
 node_modules/
 compile.bat
@@ -13,5 +14,4 @@ run.bat
 chat
 src/media/
 backup/
-youtube-websocket/
 *.bak

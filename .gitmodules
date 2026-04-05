@@ -1,0 +1,3 @@
+[submodule "youtube-websocket"]
+	path = youtube-websocket
+	url = https://github.com/Johnnycyan/youtube-websocket.git

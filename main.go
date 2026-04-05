@@ -133,21 +133,21 @@ func init() {
 }
 
 func loadTokens() {
-	file, err := os.ReadFile("tokens.json")
+	file, err := os.ReadFile("data/tokens.json")
 	if err != nil {
-		log.Fatal("Error reading tokens.json:", err)
+		log.Fatal("Error reading data/tokens.json:", err)
 	}
 
 	err = json.Unmarshal(file, &tokens)
 	if err != nil {
-		log.Fatal("Error parsing tokens.json:", err)
+		log.Fatal("Error parsing data/tokens.json:", err)
 	}
 
 	AdminPassword = tokens["admin_password"]
 }
 
 func loadActiveChannels() {
-	file, err := os.ReadFile("active.json")
+	file, err := os.ReadFile("data/active.json")
 	if err == nil {
 		json.Unmarshal(file, &activeChannels)
 	}
@@ -155,7 +155,7 @@ func loadActiveChannels() {
 
 func saveActiveChannels() {
 	file, _ := json.MarshalIndent(activeChannels, "", "  ")
-	os.WriteFile("active.json", file, 0644)
+	os.WriteFile("data/active.json", file, 0644)
 }
 
 func updateActiveChannel(channel string) {
@@ -232,7 +232,7 @@ func loadTemplateWithFuncMap(filename string, funcMap template.FuncMap) (*templa
 
 func handleAdminHub(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		tmpl, err := loadTemplate("login.html")
+		tmpl, err := loadTemplate("dist/login.html")
 		if err != nil {
 			http.Error(w, "Failed to load template", http.StatusInternalServerError)
 			return
@@ -246,7 +246,7 @@ func handleAdminHub(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		tmpl, err := loadTemplate("admin-hub.html")
+		tmpl, err := loadTemplate("dist/admin-hub.html")
 		if err != nil {
 			http.Error(w, "Failed to load template", http.StatusInternalServerError)
 			return
@@ -260,7 +260,7 @@ func handleAdminHub(w http.ResponseWriter, r *http.Request) {
 
 func handleAdminActive(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		tmpl, err := loadTemplate("login.html")
+		tmpl, err := loadTemplate("dist/login.html")
 		if err != nil {
 			http.Error(w, "Failed to load template", http.StatusInternalServerError)
 			return
@@ -297,7 +297,7 @@ func handleAdminActive(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		tmpl, err := loadTemplateWithFuncMap("admin.html", funcMap)
+		tmpl, err := loadTemplateWithFuncMap("dist/admin.html", funcMap)
 		if err != nil {
 			http.Error(w, "Failed to load template", http.StatusInternalServerError)
 			return
@@ -614,7 +614,7 @@ func handleChatterinoBadges(w http.ResponseWriter, r *http.Request) {
 }
 
 func saveTokens(accessToken string, refreshToken string) {
-	file, err := os.Create("tokens.json")
+	file, err := os.Create("data/tokens.json")
 	if err != nil {
 		log.Fatal(err)
 		return
@@ -663,9 +663,9 @@ func refreshTokenLoop() {
 }
 
 func logTwitchError(context string, err error, body string) {
-	f, fileErr := os.OpenFile("twitch_errors.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, fileErr := os.OpenFile("data/twitch_errors.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if fileErr != nil {
-		log.Println("Failed to open twitch_errors.log:", fileErr)
+		log.Println("Failed to open data/twitch_errors.log:", fileErr)
 		return
 	}
 	defer f.Close()
@@ -704,7 +704,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer clientConn.Close()
 
 	// Connect to the YouTube WebSocket using the provided channel
-	youtubeConn, _, err := websocket.DefaultDialer.Dial("ws://localhost:9905/c/"+channel, nil)
+	ytWsHost := os.Getenv("YOUTUBE_WS_HOST")
+	if ytWsHost == "" {
+		ytWsHost = "localhost:9905"
+	}
+	youtubeConn, _, err := websocket.DefaultDialer.Dial("ws://"+ytWsHost+"/c/"+channel, nil)
 	if err != nil {
 		log.Println("YouTube WebSocket connection error:", err)
 		return
@@ -1428,7 +1432,7 @@ func loadYTColors() {
 	ytColorsMutex.Lock()
 	defer ytColorsMutex.Unlock()
 
-	file, err := os.ReadFile("yt-colors.json")
+	file, err := os.ReadFile("data/yt-colors.json")
 	if err != nil {
 		ytColors = make(map[string]string)
 		return
@@ -1444,7 +1448,7 @@ func saveYTColors() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile("yt-colors.json", data, 0644)
+	return os.WriteFile("data/yt-colors.json", data, 0644)
 }
 
 func handleYTColors(w http.ResponseWriter, r *http.Request) {
@@ -1463,7 +1467,7 @@ func handleYTColors(w http.ResponseWriter, r *http.Request) {
 
 func handleAdminYTColors(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		tmpl, err := loadTemplate("login.html")
+		tmpl, err := loadTemplate("dist/login.html")
 		if err != nil {
 			http.Error(w, "Failed to load template", http.StatusInternalServerError)
 			return
@@ -1477,7 +1481,7 @@ func handleAdminYTColors(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		tmpl, err := loadTemplate("yt-colors-admin.html")
+		tmpl, err := loadTemplate("dist/yt-colors-admin.html")
 		if err != nil {
 			http.Error(w, "Failed to load template", http.StatusInternalServerError)
 			return
@@ -1541,7 +1545,7 @@ func main() {
 	// cacheBuster("./src/index.html")
 	// cacheBuster("./src/v2/index.html")
 	// load access and refresh tokens from file
-	file, err := os.Open("tokens.json")
+	file, err := os.Open("data/tokens.json")
 	if err != nil {
 		log.Fatal(err)
 		return
