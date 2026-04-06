@@ -1780,7 +1780,7 @@ func main() {
 		State:        "some-state",
 		ForceVerify:  false,
 	})
-	// log.Printf("%s\n", url)
+	log.Printf("%s\n", url)
 
 	http.HandleFunc("/twitch/oauth", TwitchOAuthHandler)
 	http.HandleFunc("/twitch/api", TwitchAPIHandler)
