@@ -1735,7 +1735,7 @@ func main() {
 		log.Fatal("No client secret found.")
 		return
 	}
-	log.Println("Access token: " + accessToken)
+	log.Println("Access token found")
 
 	args := os.Args[1:]
 	port := args[0]
@@ -1780,7 +1780,7 @@ func main() {
 		State:        "some-state",
 		ForceVerify:  false,
 	})
-	log.Printf("%s\n", url)
+	// log.Printf("%s\n", url)
 
 	http.HandleFunc("/twitch/oauth", TwitchOAuthHandler)
 	http.HandleFunc("/twitch/api", TwitchAPIHandler)
