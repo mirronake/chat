@@ -126,7 +126,7 @@ Chat = {
         : false,
     yt:
       "yt" in $.QueryString
-        ? $.QueryString.yt.toLowerCase().replace("@", "")
+        ? $.QueryString.yt.toLowerCase().replace("@", "").replace("https://www.youtube.com/", "").replace("/", "")
         : false,
     ytEmotes:
       "yt_emotes" in $.QueryString
