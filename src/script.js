@@ -517,6 +517,7 @@ function resetForm(event) {
     $ytChannel.val("");
     $regex.val("");
     $blockedUsers.val("");
+    $allowedUsers.val("");
     $size.val("3");
     $emoteScale.val("1");
     $scale.val("1");
@@ -814,6 +815,7 @@ function generateURL(event) {
         disable_sync: $sync.is(":checked"),
         disable_pruning: $pruning.is(":checked"),
         block: $blockedUsers.val().replace(/\s+/g, ""),
+        allow: $allowedUsers.val().replace(/\s+/g, ""),
         yt: $ytChannel.val().replace('@', ''),
         sms: $sms.is(":checked"),
         message_image: $sms.is(":checked") ? $messageImage.val() : false,
@@ -911,6 +913,7 @@ const $reset = $("#reset");
 const $goBack = $("#go-back");
 const $regex = $('input[name="regex"]');
 const $blockedUsers = $('input[name="blocked_users"]');
+const $allowedUsers = $('input[name="allowed_users"]');
 const $sms = $('input[name="sms"]');
 const $messageImage = $('input[name="message_image"]');
 const $bigEmotes = $('input[name="big_emotes"]');

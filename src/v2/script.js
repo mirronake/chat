@@ -107,6 +107,10 @@ Chat = {
       "block" in $.QueryString
         ? $.QueryString.block.toLowerCase().split(",")
         : false,
+    allowedUsers:
+      "allow" in $.QueryString
+        ? $.QueryString.allow.toLowerCase().split(",")
+        : false,
     bots: ["streamelements", "streamlabs", "nightbot", "moobot", "fossabot"],
     nicknameColor: "cN" in $.QueryString ? $.QueryString.cN : false,
     regex:
@@ -2464,6 +2468,16 @@ Chat = {
               if (Chat.info.blockedUsers) {
                 if (Chat.info.blockedUsers.includes(nick)) {
                   // console.log("Cyan Chat: Hiding blocked user message but getting color...'" + nick + "'");
+                  Chat.info.colors[nick] = Chat.getUserColor(nick, message.tags);
+                  Chat.loadUserPaints(nick, message.tags["user-id"]);
+                  return;
+                }
+              }
+
+              // Whitelist check - if allowedUsers is set, only show messages from those users
+              if (Chat.info.allowedUsers) {
+                if (!Chat.info.allowedUsers.includes(nick.toLowerCase())) {
+                  // console.log("Cyan Chat: Hiding non-whitelisted user message but getting color...'" + nick + "'");
                   Chat.info.colors[nick] = Chat.getUserColor(nick, message.tags);
                   Chat.loadUserPaints(nick, message.tags["user-id"]);
                   return;
