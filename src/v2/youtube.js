@@ -8,12 +8,18 @@ if (Chat.info.yt) {
 	// Create the WebSocket connection
 	var yt_socket = new ReconnectingWebSocket(wsUrl, null, { reconnectInterval: 5000 });
 
-	yt_socket.onopen = function() {
+	yt_socket.onopen = function () {
 		console.log('YouTube: Connected');
+		yt_socket.reconnectInterval = 5000;
 	};
 
-	yt_socket.onclose = function() {
-		console.log('YouTube: Disconnected');
+	yt_socket.onclose = function (event) {
+		if (event.reason === 'Could not find stream by channel identifier') {
+			console.log('YouTube: Channel not live, retrying in 60s');
+			yt_socket.reconnectInterval = 60000;
+		} else {
+			console.log('YouTube: Disconnected: ', event.reason);
+		}
 	};
 
 	function formatMessage(message) {
@@ -24,11 +30,31 @@ if (Chat.info.yt) {
 			badges += "youtubemod/1"
 		}
 
+		if (message.author.badges && message.author.badges.length > 0) {
+			const authorName = message.author.name.replace("@", "").toLowerCase().trim();
+			if (!Chat.info.userBadges[authorName]) {
+				Chat.info.userBadges[authorName] = [];
+			}
+
+			message.author.badges.forEach(badge => {
+				if (badge && badge.url) {
+					const userBadge = {
+						description: badge.tooltip || "YouTube Member",
+						url: badge.url
+					};
+					// avoid duplicates
+					if (!Chat.info.userBadges[authorName].some(b => b.url === userBadge.url)) {
+						Chat.info.userBadges[authorName].push(userBadge);
+					}
+				}
+			});
+		}
+
 		let info = {
 			"badge-info": badge_info,
 			"badges": badges,
 			"color": true,
-			"display-name": message.author.name,
+			"display-name": message.author.name.replace("@", ""),
 			"emotes": true,
 			"first-msg": "0",
 			"flags": true,
@@ -47,16 +73,24 @@ if (Chat.info.yt) {
 		return info
 	}
 
-	yt_socket.onmessage = function(data) {
+	yt_socket.onmessage = function (data) {
 		data = JSON.parse(data.data)
-		if(data.info == "deleted")
-		{
-			Chat.clearMessage(String(data.message))
+		if (data.info == "deleted") {
+			Chat.clearMessage(String(data.message).replace(/\./g, ""))
 		}
-		else
-		{
+		else if (data.info == "banned") {
+			setTimeout(function () {
+				$('.chat_line[data-user-id="' + data.externalChannelId + '"]').remove();
+			}, 200);
+		}
+		else if (data.type === "superchat") {
 			let info = formatMessage(data)
-			Chat.write(data.author.name, info, data.message, "youtube")
+			let msg = data.hasMessage ? `${data.purchase_amount} ${data.message}` : data.purchase_amount
+			Chat.write(data.author.name.replace("@", "").toLowerCase().trim(), info, msg, "youtube")
+		}
+		else {
+			let info = formatMessage(data)
+			Chat.write(data.author.name.replace("@", "").toLowerCase().trim(), info, data.message, "youtube")
 		}
 	}
 }

@@ -1,0 +1,23 @@
+# Build artifacts
+dist/
+node_modules/
+youtube-websocket/node_modules/
+
+# Data files (mounted as volume)
+data/
+
+# Dev/CI files
+*.exe
+*.bak
+chat
+.vscode/
+.git/
+.gitignore
+backup/
+backups/
+t/
+compile.bat
+pack.bat
+run.bat
+README.md
+LICENSE
