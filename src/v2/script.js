@@ -281,7 +281,7 @@ Chat = {
       (res) => {
         res?.emotes?.forEach((emote) => {
           const emoteData = emote.data.host.files.pop();
-          var link = `https:${emote.data.host.url}/${emoteData.name}`;
+          var link = `https:${emote.data.host.url}/${emoteData.name}`.replace("cdn.7tv.app", SEVENTV_CDN);
           // if link ends in .gif replace with .webp
           if (link.endsWith(".gif")) link = link.replace(".gif", ".webp")
           Chat.info.emotes[emote.name] = {
@@ -300,7 +300,7 @@ Chat = {
     ).done((res) => {
       res?.emote_set?.emotes?.forEach((emote) => {
         const emoteData = emote.data.host.files.pop();
-        var link = `https:${emote.data.host.url}/${emoteData.name}`;
+        var link = `https:${emote.data.host.url}/${emoteData.name}`.replace("cdn.7tv.app", SEVENTV_CDN);
         // if link ends in .gif replace with .webp
         if (link.endsWith(".gif")) link = link.replace(".gif", ".webp")
         Chat.info.emotes[emote.name] = {
@@ -540,7 +540,7 @@ Chat = {
     ).done((res) => {
       res?.emote_set?.emotes?.forEach((emote) => {
         const emoteData = emote.data.host.files.pop();
-        var link = `https:${emote.data.host.url}/${emoteData.name}`;
+        var link = `https:${emote.data.host.url}/${emoteData.name}`.replace("cdn.7tv.app", SEVENTV_CDN);
         if (link.endsWith('.gif')) link = link.replace('.gif', '.webp');
         channelData.emotes[emote.name] = {
           id: emote.id,
@@ -724,7 +724,7 @@ Chat = {
 
         emoteSetResponse?.emotes?.forEach((emote) => {
           const emoteData = emote.data.host.files.pop();
-          var link = `https:${emote.data.host.url}/${emoteData.name}`;
+          var link = `https:${emote.data.host.url}/${emoteData.name}`.replace("cdn.7tv.app", SEVENTV_CDN);
           // if link ends in .gif replace with .webp
           if (link.endsWith(".gif")) link = link.replace(".gif", ".webp")
           const personalEmote = {
