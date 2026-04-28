@@ -24,7 +24,7 @@ async function retry(fn, retries = 2, delayMs = 5000) {
 async function getUserInfo(twitchUserId) {
   return retry(async () => {
     const response = await fetch(
-      addRandomQueryString(`https://7tv.io/v3/users/twitch/${twitchUserId}`)
+      addRandomQueryString(`https://${SEVENTV_API}/v3/users/twitch/${twitchUserId}`)
     );
     const data = await response.json();
     const userID = data.user?.id || null;
@@ -118,7 +118,7 @@ async function getCosmeticDetails(ids) {
     };
 
     const response = await fetch(
-      addRandomQueryString("https://7tv.io/v3/gql"),
+      addRandomQueryString(`https://${SEVENTV_API}/v3/gql`),
       {
         method: "POST",
         headers: {
@@ -146,7 +146,7 @@ async function getPersonalEmoteData(id) {
       }
     }`;
     const response = await fetch(
-      addRandomQueryString("https://7tv.io/v3/gql"),
+      addRandomQueryString(`https://${SEVENTV_API}/v3/gql`),
       {
         method: "POST",
         headers: {
@@ -175,7 +175,7 @@ async function getEmoteSetsData(id) {
       }
     }`;
     const response = await fetch(
-      addRandomQueryString("https://7tv.io/v3/gql"),
+      addRandomQueryString(`https://${SEVENTV_API}/v3/gql`),
       {
         method: "POST",
         headers: {
@@ -207,7 +207,7 @@ async function getUserCosmeticData(id) {
       }
     }`;
     const response = await fetch(
-      addRandomQueryString("https://7tv.io/v3/gql"),
+      addRandomQueryString(`https://${SEVENTV_API}/v3/gql`),
       {
         method: "POST",
         headers: {

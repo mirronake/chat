@@ -277,7 +277,7 @@ Chat = {
       }
     );
 
-    $.getJSON(addRandomQueryString("https://7tv.io/v3/emote-sets/global")).done(
+    $.getJSON(addRandomQueryString(`https://${SEVENTV_API}/v3/emote-sets/global`)).done(
       (res) => {
         res?.emotes?.forEach((emote) => {
           const emoteData = emote.data.host.files.pop();
@@ -295,7 +295,7 @@ Chat = {
 
     $.getJSON(
       addRandomQueryString(
-        "https://7tv.io/v3/users/twitch/" + encodeURIComponent(channelID)
+        `https://${SEVENTV_API}/v3/users/twitch/` + encodeURIComponent(channelID)
       )
     ).done((res) => {
       res?.emote_set?.emotes?.forEach((emote) => {
@@ -536,7 +536,7 @@ Chat = {
 
     // Load 7TV channel emotes
     $.getJSON(
-      addRandomQueryString('https://7tv.io/v3/users/twitch/' + encodeURIComponent(channelID))
+      addRandomQueryString(`https://${SEVENTV_API}/v3/users/twitch/` + encodeURIComponent(channelID))
     ).done((res) => {
       res?.emote_set?.emotes?.forEach((emote) => {
         const emoteData = emote.data.host.files.pop();
@@ -718,7 +718,7 @@ Chat = {
       for (let i = 0; i < emoteSetIDs.length; i++) {
         const emoteSetResponse = await $.getJSON(
           addRandomQueryString(
-            "https://7tv.io/v3/emote-sets/" + encodeURIComponent(emoteSetIDs[i])
+            `https://${SEVENTV_API}/v3/emote-sets/` + encodeURIComponent(emoteSetIDs[i])
           )
         );
 
@@ -1082,7 +1082,7 @@ Chat = {
           });
 
         /* Deprecated endpoint
-                $.getJSON('https://7tv.io/v3/badges?user_identifier=login')
+                $.getJSON(`https://${SEVENTV_API}/v3/badges?user_identifier=login`)
                     .done(function(res) {
                         Chat.info.seventvBadges = res.badges;
                     })
@@ -1374,7 +1374,7 @@ Chat = {
         if (sevenInfo.badge) {
           var badgeObj = {
             description: sevenInfo.badge.tooltip,
-            url: "https://cdn.7tv.app/badge/" + sevenInfo.badge.id + "/3x",
+            url: `https://${SEVENTV_CDN}/badge/` + sevenInfo.badge.id + "/3x",
           };
           newUserBadges.push(badgeObj);
           Chat.info.seventvBadges[nick] = badgeObj;
@@ -1387,7 +1387,7 @@ Chat = {
         // Failed or network error: retain the old 7tv badge if there was one
         var oldBadges = Chat.info.userBadges[nick] || [];
         oldBadges.forEach(b => {
-          if (b.url && b.url.includes("cdn.7tv.app/badge")) {
+          if (b.url && (b.url.includes("cdn.7tv.app/badge") || b.url.includes(SEVENTV_CDN + "/badge"))) {
             newUserBadges.push(b);
           }
         });
@@ -1395,7 +1395,7 @@ Chat = {
     } catch (error) {
       var oldBadges = Chat.info.userBadges[nick] || [];
       oldBadges.forEach(b => {
-        if (b.url && b.url.includes("cdn.7tv.app/badge")) {
+        if (b.url && (b.url.includes("cdn.7tv.app/badge") || b.url.includes(SEVENTV_CDN + "/badge"))) {
           newUserBadges.push(b);
         }
       });

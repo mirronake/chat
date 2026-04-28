@@ -68,7 +68,7 @@ function seven_ws(channel) {
             maxReconnectInterval: 30000,
         };
 
-        const conn = new ReconnectingWebSocket('wss://events.7tv.io/v3', [], options);
+        const conn = new ReconnectingWebSocket(`wss://events.${SEVENTV_API}/v3`, [], options);
 
         conn.onopen = function () {
             console.log(`[${channel}] Successfully connected to websocket!`);
@@ -323,7 +323,7 @@ function seven_ws_shared(channelName, channelID) {
                 maxReconnectInterval: 30000,
             };
 
-            const conn = new ReconnectingWebSocket('wss://events.7tv.io/v3', [], options);
+            const conn = new ReconnectingWebSocket(`wss://events.${SEVENTV_API}/v3`, [], options);
 
             // Store the connection for cleanup
             sharedSevenWSConnections[channelID] = conn;

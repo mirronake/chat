@@ -1,3 +1,6 @@
+const SEVENTV_API = "7tvproxy" in $.QueryString ? $.QueryString["7tvproxy"] : "7tv.io";
+const SEVENTV_CDN = "7tvcdnproxy" in $.QueryString ? $.QueryString["7tvcdnproxy"] : "cdn.7tv.app";
+
 function parseFlags(input, schema) {
   const parts = input.split(/\s+/);
   const flags = {};
