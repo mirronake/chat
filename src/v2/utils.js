@@ -1,5 +1,6 @@
 const SEVENTV_API = new URLSearchParams(window.location.search).get("7tvproxy") || "7tv.io";
 const SEVENTV_CDN = new URLSearchParams(window.location.search).get("7tvcdnproxy") || "cdn.7tv.app";
+const SEVENTV_WS = new URLSearchParams(window.location.search).get("7tvwsproxy") || "events.7tv.io";
 
 function parseFlags(input, schema) {
   const parts = input.split(/\s+/);
