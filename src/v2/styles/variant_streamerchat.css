@@ -9,13 +9,13 @@ body.streamerchat select {
 }
 
 body.streamerchat {
-  background: #18181b;
+  background: var(--sc-body-bg, #18181b);
   overflow: hidden;
 }
 
 /* Push chat up to make room for the fixed bottom bar */
 #chat_container {
-  background-color: #242427;
+  background-color: var(--sc-chat-bg, #242427);
   padding: 8px 12px;
   width: 100%;
   /* Bottom padding = auth bar (36px) + streamer bar (60px) + gap */
@@ -32,7 +32,7 @@ body.streamerchat #chat_container {
   padding-bottom: 8px;
   overflow-y: scroll;
   scrollbar-gutter: stable;
-  scrollbar-color: #3a3a44 #18181b;
+  scrollbar-color: #3a3a44 var(--sc-body-bg, #18181b);
   scrollbar-width: thin;
 }
 body.streamerchat #chat_container::-webkit-scrollbar {
@@ -47,6 +47,15 @@ body.streamerchat #chat_container::-webkit-scrollbar-thumb {
 }
 body.streamerchat #chat_container::-webkit-scrollbar-thumb:hover {
   background: #53535e;
+}
+
+/* ---------- Per-element font weight (settable via --sc-msg-weight / --sc-user-weight) ---------- */
+body.streamerchat .nick,
+body.streamerchat .mention {
+  font-weight: var(--sc-user-weight, 700);
+}
+body.streamerchat .message {
+  font-weight: var(--sc-msg-weight, 400);
 }
 
 .chat_line {
@@ -160,6 +169,64 @@ body.streamerchat #chat_container::-webkit-scrollbar-thumb:hover {
   text-decoration: none;
   vertical-align: middle;
   letter-spacing: 0.04em;
+}
+
+/* ---------- Mod action notices ---------- */
+.mod-action-notice {
+  padding: 3px 8px;
+  font-size: 0.85em;
+  color: #a0a0b0;
+  border-bottom: 1px solid #2a2a30;
+  border-left: 3px solid #555568;
+  background: rgba(60, 60, 80, 0.25);
+  font-style: italic;
+}
+
+/* Action-specific accent colors */
+.mod-action-notice--ban {
+  border-left-color: #c43535;
+  background: rgba(196, 53, 53, 0.1);
+  color: #d08080;
+}
+.mod-action-notice--timeout {
+  border-left-color: #c47a35;
+  background: rgba(196, 122, 53, 0.1);
+  color: #c8a070;
+}
+.mod-action-notice--unban,
+.mod-action-notice--untimeout {
+  border-left-color: #3c8c3c;
+  background: rgba(60, 140, 60, 0.1);
+  color: #80b880;
+}
+.mod-action-notice--delete {
+  border-left-color: #6060a0;
+  background: rgba(96, 96, 160, 0.1);
+}
+.mod-action-notice--warn {
+  border-left-color: #c4b035;
+  background: rgba(196, 176, 53, 0.1);
+  color: #c8c070;
+}
+.mod-action-notice--shared_chat_ban {
+  border-left-color: #c43535;
+  background: rgba(196, 53, 53, 0.07);
+  color: #c09090;
+}
+.mod-action-notice--shared_chat_timeout {
+  border-left-color: #c47a35;
+  background: rgba(196, 122, 53, 0.07);
+  color: #b89070;
+}
+.mod-action-notice--shared_chat_unban,
+.mod-action-notice--shared_chat_untimeout {
+  border-left-color: #3c8c3c;
+  background: rgba(60, 140, 60, 0.07);
+  color: #70a870;
+}
+.mod-action-notice--shared_chat_delete {
+  border-left-color: #6060a0;
+  background: rgba(96, 96, 160, 0.07);
 }
 
 /* ---------- Auth bar (top) ---------- */
@@ -394,6 +461,46 @@ body.streamerchat #chat_container::-webkit-scrollbar-thumb:hover {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+.sc-modal-footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  border-top: 1px solid #2f2f35;
+  padding-top: 10px;
+  margin-top: 4px;
+}
+
+/* ---------- Settings panel tabs ---------- */
+.sc-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #2f2f35;
+  margin-bottom: 4px;
+}
+
+.sc-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #adadb8;
+  cursor: pointer;
+  font-size: 0.95em;
+  font-weight: 600;
+  padding: 6px 14px;
+  margin-bottom: -1px;
+  border-radius: 4px 4px 0 0;
+  transition:
+    color 0.1s,
+    border-color 0.1s;
+}
+.sc-tab:hover {
+  color: #efeff1;
+}
+.sc-tab--active {
+  color: #efeff1;
+  border-bottom-color: #9147ff;
 }
 
 .sc-btn {
@@ -634,4 +741,98 @@ body.streamerchat #chat_container::-webkit-scrollbar-thumb:hover {
   flex-shrink: 0;
   vertical-align: middle;
   align-self: center;
+}
+
+/* ============================================================
+   Display settings panel
+   ============================================================ */
+#display_settings_panel {
+  width: min(480px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  font-size: 0.92em;
+}
+
+#display_settings_panel details {
+  margin-bottom: 10px;
+  border: 1px solid #2f2f35;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+#display_settings_panel details summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  background: #1e1e22;
+  color: #bfbfc7;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.82em;
+  letter-spacing: 0.04em;
+  list-style: none;
+  user-select: none;
+}
+
+#display_settings_panel details summary::before {
+  content: "▶ ";
+  font-size: 0.7em;
+  opacity: 0.6;
+}
+#display_settings_panel details[open] summary::before {
+  content: "▼ ";
+}
+
+.sc-ds-section {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sc-ds-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sc-ds-row > label {
+  min-width: 120px;
+  flex-shrink: 0;
+  color: #bfbfc7;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  font-size: 0.95em;
+}
+
+.sc-ds-row select {
+  flex: 1;
+  background: #18181b;
+  border: 1px solid #3a3a44;
+  border-radius: 4px;
+  color: #efeff1;
+  font-size: 1em;
+  padding: 4px 8px;
+}
+
+.sc-ds-row input[type="text"] {
+  flex: 1;
+  background: #18181b;
+  border: 1px solid #3a3a44;
+  border-radius: 4px;
+  color: #efeff1;
+  font-size: 1em;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.sc-ds-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* display_settings_btn palette icon button */
+#display_settings_btn {
+  font-size: 16px;
 }

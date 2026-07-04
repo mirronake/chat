@@ -19,6 +19,11 @@ var StreamerChat = (function () {
         "moderator:manage:banned_users",
         "moderator:manage:announcements",
         "moderator:manage:chat_settings",
+        "moderator:manage:blocked_terms",
+        "moderator:manage:unban_requests",
+        "moderator:manage:warnings",
+        "moderator:read:moderators",
+        "moderator:read:vips",
         "channel:manage:polls",
         "channel:manage:predictions",
         "channel:manage:moderators",
@@ -28,6 +33,7 @@ var StreamerChat = (function () {
         "channel:edit:commercial",
         "user:manage:chat_color",
         "user:read:moderated_channels",
+        "moderation:read",
     ].join(" ");
 
     var CLIENT_ID = ""; // populated from server token response
@@ -94,6 +100,11 @@ var StreamerChat = (function () {
     var _atBottom = true;
     var _scrollObserver = null;
 
+    // EventSub WebSocket
+    var _eventSubWs = null;
+    var _eventSubKeepaliveTimer = null;
+    var _eventSubReconnecting = false;
+
     // ============================================================
     // Utility helpers
     // ============================================================
@@ -159,9 +170,9 @@ var StreamerChat = (function () {
 
     function init() {
         if (!Chat.info.streamerChat) return;
-        $("#streamer_auth_bar").show();
-        initAuth();
-        bindUI();
+        if (!Chat.info.preview) $("#streamer_auth_bar").show();
+        applyDisplaySettings(loadDisplaySettings());
+        if (!Chat.info.preview) { initAuth(); bindUI(); }
     }
 
     function initAuth() {
@@ -265,9 +276,10 @@ var StreamerChat = (function () {
                     $("#streamer_login_btn").hide();
                     $("#streamer_username").text(data.display_name || data.login);
                     $("#streamer_user_info").show();
-                    if (data.is_mod) {
+                    if (data.is_mod && !Chat.info.preview) {
                         $("#streamer_bar").show();
-                    } else {
+                        startEventSub();
+                    } else if (!data.is_mod) {
                         showError("You are not a mod or broadcaster for this channel.");
                     }
                 })
@@ -278,13 +290,19 @@ var StreamerChat = (function () {
         });
     }
 
+    var _refreshPromise = null;
+
     function refreshIfNeeded() {
         var expiry = parseInt(localStorage.getItem(LS_EXPIRY) || "0", 10);
         var oneHour = 3600 * 1000;
         if (expiry - Date.now() > oneHour) return Promise.resolve();
         var refresh = localStorage.getItem(LS_REFRESH);
         if (!refresh) return Promise.resolve();
-        return apiCall("POST", "/api/streamer/refresh", { refresh_token: refresh }, null)
+        // Deduplicate concurrent refresh calls — reuse the in-flight promise so
+        // two simultaneous callers don't both send the same refresh token (which
+        // would cause Twitch to rotate it, leaving the second call with a 401).
+        if (_refreshPromise) return _refreshPromise;
+        _refreshPromise = apiCall("POST", "/api/streamer/refresh", { refresh_token: refresh }, null)
             .then(function (data) {
                 localStorage.setItem(LS_TOKEN, data.access_token);
                 if (data.refresh_token) localStorage.setItem(LS_REFRESH, data.refresh_token);
@@ -293,7 +311,11 @@ var StreamerChat = (function () {
             })
             .catch(function (e) {
                 console.error("[StreamerChat] Token refresh failed:", e);
+            })
+            .finally(function () {
+                _refreshPromise = null;
             });
+        return _refreshPromise;
     }
 
     // ============================================================
@@ -399,13 +421,55 @@ var StreamerChat = (function () {
             executeModAction(action, nick, msgId, userId, $chatLine);
         });
 
-        // Mod settings gear
-        $("#streamer_settings_btn").on("click", openModActionsSettings);
+        // Settings gear — opens unified panel on Display tab
+        $("#streamer_settings_btn").on("click", function () { openSettingsPanel("display"); });
+
+        // Tab switching within the unified settings panel
+        $(document).on("click", ".sc-tab[data-tab]", function () {
+            var tab = $(this).data("tab");
+            if (tab === "mod") {
+                openModActionsSettings();
+            } else {
+                openSettingsPanel(tab);
+            }
+        });
+
+        // Display settings — save, reset
+        $("#ds_reset_btn").on("click", function () {
+            populateDisplayForm(Object.assign({}, DEFAULT_DISPLAY));
+        });
+        $("#ds_save_btn").on("click", function () {
+            var settings = readDisplayForm();
+            saveDisplaySettings(settings);
+            applyDisplaySettings(settings);
+            $("#mod_settings_overlay").hide();
+        });
+        // Show/hide outline sub-options
+        $("#ds_pi_mode").on("change", function () {
+            if ($(this).val() === "outline") {
+                $(".ds-pi-outline").show();
+            } else {
+                $(".ds-pi-outline").hide();
+            }
+        });
+        // Show/hide custom font input
+        $("#ds_font").on("change", function () {
+            if ($(this).val() === "-1") {
+                $("#ds_custom_font_row").show();
+            } else {
+                $("#ds_custom_font_row").hide();
+            }
+        });
+        // Close unified modal button
         $("#mod_settings_close_btn").on("click", function () { $("#mod_settings_overlay").hide(); });
         $("#mod_settings_save_btn").on("click", saveModSettings);
         $("#mod_add_type").on("change", function () {
             var isTimeout = $(this).val() === "timeout";
             $("#mod_add_duration").toggle(isTimeout);
+        });
+        // Close unified settings modal on overlay background click
+        $("#mod_settings_overlay").on("click", function (e) {
+            if (e.target === this) $(this).hide();
         });
         $("#mod_add_btn").on("click", addModAction);
 
@@ -900,6 +964,220 @@ var StreamerChat = (function () {
     }
 
     // ============================================================
+    // Display settings
+    // ============================================================
+
+    var LS_DISPLAY = "cyan_display_settings";
+
+    var DEFAULT_DISPLAY = {
+        bodyBg: "#18181b",
+        chatBg: "#242427",
+        altBgEnabled: false,
+        altBg: "#2a2a2e",
+        font: 0,
+        customFont: "",
+        size: 2,
+        height: 3,
+        emoteScale: 1,
+        msgWeight: 400,
+        userWeight: 700,
+        scale: 1,
+        platformIndicator: "none",
+        piStyle: "solid",
+        piSides: "left",
+        piThickness: 3,
+        piRadius: 0,
+    };
+
+    function loadDisplaySettings() {
+        try {
+            var saved = JSON.parse(localStorage.getItem(LS_DISPLAY));
+            if (saved && typeof saved === "object") {
+                return Object.assign({}, DEFAULT_DISPLAY, saved);
+            }
+        } catch (e) { /* ignore */ }
+        // No localStorage — seed from URL params (Chat.info)
+        var fromUrl = {};
+        if (Chat.info) {
+            fromUrl.size = Chat.info.size != null ? Chat.info.size : DEFAULT_DISPLAY.size;
+            fromUrl.height = Chat.info.height != null ? Chat.info.height : DEFAULT_DISPLAY.height;
+            if (typeof Chat.info.font === "number") {
+                fromUrl.font = Chat.info.font;
+            } else if (typeof Chat.info.font === "string" && Chat.info.font) {
+                fromUrl.font = -1;
+                fromUrl.customFont = Chat.info.font;
+            }
+            if (Chat.info.emoteScale) fromUrl.emoteScale = Chat.info.emoteScale;
+            if (Chat.info.platformIndicator) fromUrl.platformIndicator = Chat.info.platformIndicator;
+            if (Chat.info.piStyle) fromUrl.piStyle = Chat.info.piStyle;
+            if (Chat.info.piSides) fromUrl.piSides = Chat.info.piSides;
+            if (Chat.info.piThickness) fromUrl.piThickness = Chat.info.piThickness;
+            if (Chat.info.piRadius != null) fromUrl.piRadius = Chat.info.piRadius;
+        }
+        return Object.assign({}, DEFAULT_DISPLAY, fromUrl);
+    }
+
+    function saveDisplaySettings(settings) {
+        localStorage.setItem(LS_DISPLAY, JSON.stringify(settings));
+    }
+
+    function applyDisplaySettings(settings) {
+        var root = document.documentElement;
+
+        // Colors
+        root.style.setProperty("--sc-body-bg", settings.bodyBg || DEFAULT_DISPLAY.bodyBg);
+        root.style.setProperty("--sc-chat-bg", settings.chatBg || DEFAULT_DISPLAY.chatBg);
+        root.style.setProperty("--sc-alt-bg", settings.altBgEnabled ? (settings.altBg || DEFAULT_DISPLAY.altBg) : "transparent");
+
+        // Font
+        var fontIdx = parseInt(settings.font);
+        if (fontIdx === -1) {
+            // Custom font from Google Fonts
+            if (settings.customFont) {
+                loadCustomFont(settings.customFont);
+            }
+        } else if (fontIdx >= 0 && fontIdx < fonts.length) {
+            replaceCSS("font", fonts[fontIdx]);
+        }
+
+        // Size (0=tiny,1=small,2=medium,3=large)
+        var sizeIdx = parseInt(settings.size);
+        if (isNaN(sizeIdx)) sizeIdx = 2;
+        var sizeName = sizes[sizeIdx];
+        if (sizeName) replaceCSS("size", sizeName);
+        var scaleMap = { 0: 1, 1: 20 / 14, 2: 34 / 14, 3: 48 / 14 };
+        if (Chat.info) Chat.info.seven_scale = scaleMap[sizeIdx] !== undefined ? scaleMap[sizeIdx] : (34 / 14);
+
+        // Height
+        var heightIdx = parseInt(settings.height);
+        if (!isNaN(heightIdx) && heights[heightIdx]) {
+            replaceCSS("height", heights[heightIdx]);
+        }
+
+        // Emote scale
+        removeEmoteScaleCSS();
+        var emoteScaleVal = parseInt(settings.emoteScale) || 1;
+        if (emoteScaleVal > 1 && sizeName) {
+            appendCSS("emoteScale_" + sizeName, emoteScaleVal);
+        }
+
+        // Font weights
+        root.style.setProperty("--sc-msg-weight", String(settings.msgWeight != null ? settings.msgWeight : DEFAULT_DISPLAY.msgWeight));
+        root.style.setProperty("--sc-user-weight", String(settings.userWeight != null ? settings.userWeight : DEFAULT_DISPLAY.userWeight));
+
+        // Scale
+        var scaleVal = parseFloat(settings.scale) || 1;
+        var $container = $("#chat_container");
+        if (scaleVal !== 1) {
+            $container[0].style.transform = "scale(" + scaleVal + ")";
+            $container[0].style.transformOrigin = "top left";
+            $container[0].style.height = "calc((100% / " + scaleVal + ") - ((var(--streamer-auth-bar-height) + var(--streamer-bar-height)) / " + scaleVal + "))";
+            $container[0].style.width = "calc(100% / " + scaleVal + ")";
+        } else {
+            $container[0].style.transform = "";
+            $container[0].style.transformOrigin = "";
+            $container[0].style.height = "";
+            $container[0].style.width = "";
+        }
+
+        // Platform indicator
+        applyPlatformIndicator(
+            settings.platformIndicator || "none",
+            settings.piSides || "left",
+            settings.piStyle || "solid",
+            settings.piThickness || 3,
+            settings.piRadius || 0
+        );
+    }
+
+    function populateDisplayForm(settings) {
+        // Colors
+        $("#ds_body_bg").val(settings.bodyBg || DEFAULT_DISPLAY.bodyBg);
+        $("#ds_chat_bg").val(settings.chatBg || DEFAULT_DISPLAY.chatBg);
+        $("#ds_alt_bg_enabled").prop("checked", !!settings.altBgEnabled);
+        $("#ds_alt_bg").val(settings.altBg || DEFAULT_DISPLAY.altBg);
+
+        // Typography
+        var fontVal = settings.font != null ? settings.font : DEFAULT_DISPLAY.font;
+        $("#ds_font").val(String(fontVal));
+        if (fontVal === -1) {
+            $("#ds_custom_font_row").show();
+            $("#ds_custom_font").val(settings.customFont || "");
+        } else {
+            $("#ds_custom_font_row").hide();
+        }
+        $("#ds_size").val(String(settings.size != null ? settings.size : DEFAULT_DISPLAY.size));
+        $("#ds_height").val(String(settings.height != null ? settings.height : DEFAULT_DISPLAY.height));
+        $("#ds_msg_weight").val(String(settings.msgWeight != null ? settings.msgWeight : DEFAULT_DISPLAY.msgWeight));
+        $("#ds_user_weight").val(String(settings.userWeight != null ? settings.userWeight : DEFAULT_DISPLAY.userWeight));
+        $("#ds_scale").val(String(settings.scale != null ? settings.scale : DEFAULT_DISPLAY.scale));
+
+        // Emotes
+        $("#ds_emote_scale").val(String(settings.emoteScale != null ? settings.emoteScale : DEFAULT_DISPLAY.emoteScale));
+
+        // Platform indicator
+        var piMode = settings.platformIndicator || "none";
+        $("#ds_pi_mode").val(piMode);
+        if (piMode === "outline") {
+            $(".ds-pi-outline").show();
+        } else {
+            $(".ds-pi-outline").hide();
+        }
+        $("#ds_pi_style").val(settings.piStyle || DEFAULT_DISPLAY.piStyle);
+        $("#ds_pi_sides").val(settings.piSides || DEFAULT_DISPLAY.piSides);
+        $("#ds_pi_thickness").val(String(settings.piThickness != null ? settings.piThickness : DEFAULT_DISPLAY.piThickness));
+        $("#ds_pi_radius").val(String(settings.piRadius != null ? settings.piRadius : DEFAULT_DISPLAY.piRadius));
+
+        // Refresh Coloris so swatches reflect new values
+        if (window.Coloris) {
+            Coloris({ el: "#ds_body_bg, #ds_chat_bg, #ds_alt_bg", theme: "default", themeMode: "dark", alpha: false });
+        }
+    }
+
+    function readDisplayForm() {
+        var fontVal = parseInt($("#ds_font").val());
+        if (isNaN(fontVal)) fontVal = 0;
+        return {
+            bodyBg: $("#ds_body_bg").val() || DEFAULT_DISPLAY.bodyBg,
+            chatBg: $("#ds_chat_bg").val() || DEFAULT_DISPLAY.chatBg,
+            altBgEnabled: $("#ds_alt_bg_enabled").is(":checked"),
+            altBg: $("#ds_alt_bg").val() || DEFAULT_DISPLAY.altBg,
+            font: fontVal,
+            customFont: fontVal === -1 ? ($("#ds_custom_font").val().trim() || "") : "",
+            size: parseInt($("#ds_size").val()),
+            height: parseInt($("#ds_height").val()),
+            msgWeight: parseInt($("#ds_msg_weight").val()) || 400,
+            userWeight: parseInt($("#ds_user_weight").val()) || 700,
+            scale: parseFloat($("#ds_scale").val()) || 1,
+            emoteScale: parseInt($("#ds_emote_scale").val()) || 1,
+            platformIndicator: $("#ds_pi_mode").val() || "none",
+            piStyle: $("#ds_pi_style").val() || "solid",
+            piSides: $("#ds_pi_sides").val() || "left",
+            piThickness: parseInt($("#ds_pi_thickness").val()) || 3,
+            piRadius: parseInt($("#ds_pi_radius").val()) || 0,
+        };
+    }
+
+    function openSettingsPanel(tab) {
+        tab = tab || "display";
+        $(".sc-tab").removeClass("sc-tab--active");
+        $(".sc-tab[data-tab='" + tab + "']").addClass("sc-tab--active");
+        $("[id^='settings_tab_']").hide();
+        $("#settings_tab_" + tab).show();
+        if (tab === "display") {
+            populateDisplayForm(loadDisplaySettings());
+        } else if (tab === "mod") {
+            openModActionsSettings();
+            return; // openModActionsSettings already calls show()
+        }
+        $("#mod_settings_overlay").show();
+    }
+
+    function openDisplaySettings() {
+        openSettingsPanel("display");
+    }
+
+    // ============================================================
     // Mod settings panel
     // ============================================================
 
@@ -936,6 +1214,11 @@ var StreamerChat = (function () {
 
         // Keep-deleted toggle state
         $("#keep_deleted_toggle").prop("checked", localStorage.getItem(LS_KEEP_DELETED) === "true");
+        // Ensure mod tab is active within the unified panel
+        $(".sc-tab").removeClass("sc-tab--active");
+        $(".sc-tab[data-tab='mod']").addClass("sc-tab--active");
+        $("[id^='settings_tab_']").hide();
+        $("#settings_tab_mod").show();
         $("#mod_settings_overlay").show();
     }
 
@@ -1232,6 +1515,247 @@ var StreamerChat = (function () {
             .addClass(success ? "success" : "error")
             .text(msg)
             .show();
+    }
+
+    // ============================================================
+    // EventSub — channel.moderate (moderation action notices)
+    // ============================================================
+
+    function startEventSub() {
+        connectEventSubWs("wss://eventsub.wss.twitch.tv/ws");
+    }
+
+    function connectEventSubWs(url) {
+        if (_eventSubWs) {
+            try { _eventSubWs.close(); } catch (e) { }
+            _eventSubWs = null;
+        }
+        var ws = new WebSocket(url);
+        _eventSubWs = ws;
+
+        ws.onmessage = function (e) {
+            var msg;
+            try { msg = JSON.parse(e.data); } catch (ex) { return; }
+            handleEventSubMessage(msg, ws);
+        };
+
+        ws.onerror = function (e) {
+            console.error("[StreamerChat][EventSub] WebSocket error", e);
+        };
+
+        ws.onclose = function () {
+            clearEventSubKeepalive();
+            if (ws === _eventSubWs && !_eventSubReconnecting) {
+                // Reconnect after a short delay if we're still supposed to be connected
+                setTimeout(function () {
+                    if (Chat.info.streamerIsMod) {
+                        connectEventSubWs("wss://eventsub.wss.twitch.tv/ws");
+                    }
+                }, 5000);
+            }
+        };
+    }
+
+    function handleEventSubMessage(msg, ws) {
+        var msgType = msg.metadata && msg.metadata.message_type;
+        if (msgType === "session_welcome" || msgType === "session_keepalive") {
+            var timeout = msg.payload && msg.payload.session && msg.payload.session.keepalive_timeout_seconds;
+            resetEventSubKeepalive(timeout);
+        }
+        switch (msgType) {
+            case "session_welcome":
+                subscribeChannelModerate(msg.payload.session.id);
+                break;
+            case "session_reconnect": {
+                var reconnectUrl = msg.payload.session.reconnect_url;
+                _eventSubReconnecting = true;
+                var oldWs = ws;
+                connectEventSubWs(reconnectUrl);
+                // Close the old connection after the new one takes over
+                _eventSubWs.onopen = function () {
+                    _eventSubReconnecting = false;
+                    try { oldWs.close(); } catch (e) { }
+                };
+                break;
+            }
+            case "notification":
+                if (msg.metadata && msg.metadata.subscription_type === "channel.moderate") {
+                    handleModerateEvent(msg.payload.event);
+                }
+                break;
+            case "revocation":
+                console.warn("[StreamerChat][EventSub] Subscription revoked:", msg.payload);
+                break;
+        }
+    }
+
+    function resetEventSubKeepalive(timeoutSeconds) {
+        clearEventSubKeepalive();
+        var ms = ((timeoutSeconds || 10) + 10) * 1000;
+        _eventSubKeepaliveTimer = setTimeout(function () {
+            console.warn("[StreamerChat][EventSub] Keepalive timeout — reconnecting");
+            if (_eventSubWs) _eventSubWs.close();
+        }, ms);
+    }
+
+    function clearEventSubKeepalive() {
+        if (_eventSubKeepaliveTimer) {
+            clearTimeout(_eventSubKeepaliveTimer);
+            _eventSubKeepaliveTimer = null;
+        }
+    }
+
+    function subscribeChannelModerate(sessionId) {
+        var broadcasterID = Chat.info.channelID;
+        var moderatorID = Chat.info.streamerUserId;
+        refreshIfNeeded().then(function () {
+            return apiCall("POST", "/api/streamer/eventsub/subscribe", {
+                session_id: sessionId,
+                type: "channel.moderate",
+                version: "2",
+                condition: {
+                    broadcaster_user_id: broadcasterID,
+                    moderator_user_id: moderatorID,
+                },
+            });
+        }).then(function (data) {
+            console.log("[StreamerChat][EventSub] Subscribed to channel.moderate", data);
+        }).catch(function (e) {
+            console.error("[StreamerChat][EventSub] Subscription failed:", e);
+        });
+    }
+
+    function handleModerateEvent(event) {
+        if (!event) return;
+        var mod = event.moderator_user_login || "unknown";
+        var action = event.action;
+        var text;
+
+        // Shared-chat variants populate shared_chat_* fields instead of the
+        // regular ones. The action value may be the shared_chat_* name, or
+        // (per some docs examples) may still be the base action name. Normalise
+        // by checking the data fields when the action is ambiguous.
+        if (action === "ban" && !event.ban && event.shared_chat_ban) action = "shared_chat_ban";
+        if (action === "timeout" && !event.timeout && event.shared_chat_timeout) action = "shared_chat_timeout";
+        if (action === "unban" && !event.unban && event.shared_chat_unban) action = "shared_chat_unban";
+        if (action === "untimeout" && !event.untimeout && event.shared_chat_untimeout) action = "shared_chat_untimeout";
+        if (action === "delete" && !event.delete && event.shared_chat_delete) action = "shared_chat_delete";
+
+        switch (action) {
+            case "ban":
+                text = mod + " banned " + (event.ban && event.ban.user_login);
+                if (event.ban && event.ban.reason) text += " (\"" + event.ban.reason + "\")";
+                break;
+            case "shared_chat_ban": {
+                var scb = event.shared_chat_ban;
+                text = mod + " banned " + (scb && scb.user_login) + " (shared chat)";
+                if (scb && scb.reason) text += " (\"" + scb.reason + "\")";
+                break;
+            }
+            case "timeout": {
+                var to = event.timeout;
+                var dur = to && durationFromExpiresAt(to.expires_at);
+                text = mod + " timed out " + (to && to.user_login);
+                if (dur) text += " for " + dur;
+                if (to && to.reason) text += " (\"" + to.reason + "\")";
+                break;
+            }
+            case "shared_chat_timeout": {
+                var scto = event.shared_chat_timeout;
+                var dur = scto && durationFromExpiresAt(scto.expires_at);
+                text = mod + " timed out " + (scto && scto.user_login) + " (shared chat)";
+                if (dur) text += " for " + dur;
+                if (scto && scto.reason) text += " (\"" + scto.reason + "\")";
+                break;
+            }
+            case "unban":
+                text = mod + " unbanned " + (event.unban && event.unban.user_login);
+                break;
+            case "shared_chat_unban":
+                text = mod + " unbanned " + (event.shared_chat_unban && event.shared_chat_unban.user_login) + " (shared chat)";
+                break;
+            case "untimeout":
+                text = mod + " removed timeout from " + (event.untimeout && event.untimeout.user_login);
+                break;
+            case "shared_chat_untimeout":
+                text = mod + " removed timeout from " + (event.shared_chat_untimeout && event.shared_chat_untimeout.user_login) + " (shared chat)";
+                break;
+            case "delete":
+                text = mod + " deleted a message from " + (event.delete && event.delete.user_login);
+                break;
+            case "shared_chat_delete":
+                text = mod + " deleted a message from " + (event.shared_chat_delete && event.shared_chat_delete.user_login) + " (shared chat)";
+                break;
+            case "clear":
+                text = mod + " cleared chat";
+                break;
+            case "slow":
+                text = mod + " enabled slow mode (" + (event.slow && event.slow.wait_time_seconds) + "s)";
+                break;
+            case "slowoff":
+                text = mod + " disabled slow mode";
+                break;
+            case "subscribers":
+                text = mod + " enabled subscribers-only mode";
+                break;
+            case "subscribersoff":
+                text = mod + " disabled subscribers-only mode";
+                break;
+            case "emoteonly":
+                text = mod + " enabled emote-only mode";
+                break;
+            case "emoteonlyoff":
+                text = mod + " disabled emote-only mode";
+                break;
+            case "mod":
+                text = mod + " modded " + (event.mod && event.mod.user_login);
+                break;
+            case "unmod":
+                text = mod + " unmodded " + (event.unmod && event.unmod.user_login);
+                break;
+            case "vip":
+                text = mod + " gave VIP to " + (event.vip && event.vip.user_login);
+                break;
+            case "unvip":
+                text = mod + " removed VIP from " + (event.unvip && event.unvip.user_login);
+                break;
+            case "warn":
+                text = mod + " warned " + (event.warn && event.warn.user_login);
+                if (event.warn && event.warn.reason) text += ": \"" + event.warn.reason + "\"";
+                break;
+            default:
+                text = mod + " performed action: " + action;
+        }
+        showModActionNotice(text, action);
+    }
+
+    // Compute a human-readable duration string from an ISO-8601 expires_at timestamp.
+    // Twitch timeout payloads use expires_at rather than a duration field.
+    function durationFromExpiresAt(expiresAt) {
+        if (!expiresAt) return null;
+        var seconds = Math.round((new Date(expiresAt) - Date.now()) / 1000);
+        if (seconds <= 0) return null;
+        return formatModDuration(seconds);
+        if (seconds < 3600) {
+            var m = Math.floor(seconds / 60);
+            var s = seconds % 60;
+            return s > 0 ? m + "m " + s + "s" : m + "m";
+        }
+        var h = Math.floor(seconds / 3600);
+        var rem = seconds % 3600;
+        var m2 = Math.floor(rem / 60);
+        return m2 > 0 ? h + "h " + m2 + "m" : h + "h";
+    }
+
+    function showModActionNotice(text, actionType) {
+        var $line = $("<div class='mod-action-notice'></div>");
+        if (actionType) $line.addClass("mod-action-notice--" + actionType);
+        $line.text(text);
+        var $container = $("#chat_container");
+        $container.append($line);
+        // Cap at 200 notice lines to avoid unbounded growth
+        var $notices = $container.find(".mod-action-notice");
+        if ($notices.length > 200) $notices.first().remove();
     }
 
     // ============================================================

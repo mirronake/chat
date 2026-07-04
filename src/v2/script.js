@@ -14,6 +14,8 @@
     return params;
   })(window.location.search.substr(1).split("&"));
 
+
+
   // // Check if 'v' parameter exists
   // if (!$.QueryString.hasOwnProperty("v")) {
   //   console.log("'v' parameter is not present.");
@@ -31,6 +33,148 @@
   //   }
   // }
 })(jQuery);
+
+// Platform indicator SVG icons (inline, no external requests)
+var TWITCH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 28" fill="#9146ff"><path d="M2.149 0L0 6.262v19.476h6.571V29l3.806-3.262h5.089L24 16.81V0H2.149zm20.02 15.619l-4.15 3.887h-6.049l-3.806 3.262v-3.262H3.938V1.828h18.231v13.791zm-4.15-7.726V13.2h-2.475V7.893h2.475zm-6.57 0V13.2H8.973V7.893h2.475z"/></svg>';
+var YOUTUBE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#ff0000"><path d="M23.495 6.205a3.007 3.007 0 00-2.088-2.088c-1.87-.501-9.396-.501-9.396-.501s-7.507-.01-9.396.501A3.007 3.007 0 00.527 6.205a31.247 31.247 0 00-.522 5.805 31.247 31.247 0 00.522 5.783 3.007 3.007 0 002.088 2.088c1.868.502 9.396.502 9.396.502s7.506 0 9.396-.502a3.007 3.007 0 002.088-2.088 31.247 31.247 0 00.5-5.783 31.247 31.247 0 00-.5-5.805zM9.609 15.601V8.408l6.264 3.602z"/></svg>';
+var TWITCH_BADGE_SRC = "data:image/svg+xml," + encodeURIComponent(TWITCH_SVG);
+var YOUTUBE_BADGE_SRC = "data:image/svg+xml," + encodeURIComponent(YOUTUBE_SVG);
+
+// ── BTTV / FFZ emote-modifier support ────────────────────────────────────────
+const BTTV_MODIFIER_SET = new Set(['w!', 'c!', 'z!', 'h!', 'v!', 'l!', 'r!', 'p!', 's!']);
+const FFZ_MODIFIER_SET  = new Set(['ffzX', 'ffzY', 'ffzCursed', 'ffzW']);
+
+/**
+ * Inject the combined visual effects of `modifiers` into an emote `<img>` HTML string.
+ * Modifiers are processed left-to-right; for conflicting effects the last one wins.
+ * The expected allMods order (from callers) is: [farthest-FFZ … closest-FFZ, farthest-BTTV … closest-BTTV]
+ * so that BTTV modifiers (especially the one immediately before the emote) take final priority.
+ *
+ * @param {string} imgHtml  The emote img tag HTML string.
+ * @param {string[]} modifiers  Array of modifier token strings.
+ * @returns {string} Modified img HTML string.
+ */
+function applyEmoteModifiers(imgHtml, modifiers) {
+  if (!imgHtml.startsWith('<img ')) {
+    console.warn('applyEmoteModifiers: expected <img> tag, got:', imgHtml);
+    return imgHtml;
+  }
+
+  let flipX = false;
+  let flipY = false;
+  let rotDeg = 0;
+  // For conflicting effects (filter vs. animation class) the last write wins.
+  // Track which type last "claimed" the conflict slot.
+  let filterStr = null;   // e.g. 'grayscale(1) brightness(0.7) contrast(2.5)'
+  let animClass = null;   // 'emote-mod-party' | 'emote-mod-shake'
+  let lastConflictType = null; // 'filter' | 'anim'
+  let applyWide = false;
+
+  for (const mod of modifiers) {
+    switch (mod) {
+      case 'h!':
+      case 'ffzX':
+        flipX = !flipX;
+        break;
+      case 'v!':
+      case 'ffzY':
+        flipY = !flipY;
+        break;
+      case 'l!':
+        rotDeg -= 90;
+        break;
+      case 'r!':
+        rotDeg += 90;
+        break;
+      case 'c!':
+      case 'ffzCursed':
+        filterStr = 'grayscale(1) brightness(0.7) contrast(2.5)';
+        lastConflictType = 'filter';
+        animClass = null;
+        break;
+      case 'p!':
+        animClass = 'emote-mod-party';
+        lastConflictType = 'anim';
+        filterStr = null;
+        break;
+      case 's!':
+        animClass = 'emote-mod-shake';
+        lastConflictType = 'anim';
+        filterStr = null;
+        break;
+      case 'w!':
+      case 'ffzW':
+        applyWide = true;
+        break;
+      case 'z!':
+        // Consume token only, no visual effect.
+        break;
+    }
+  }
+
+  // Build transform string.
+  const transforms = [];
+  if (flipX) transforms.push('scaleX(-1)');
+  if (flipY) transforms.push('scaleY(-1)');
+  // Normalise rotation to [0,360) for compactness; 0 means no rotation.
+  const netRot = ((rotDeg % 360) + 360) % 360;
+  if (netRot !== 0) transforms.push(`rotate(${netRot}deg)`);
+
+  // Inject attributes into the img tag.
+  let result = imgHtml;
+
+  // style attribute — transform and/or filter
+  const styleParts = [];
+  if (transforms.length > 0) styleParts.push(`transform: ${transforms.join(' ')}`);
+  if (filterStr) styleParts.push(`filter: ${filterStr}`);
+  // (wide: no inline style placeholder needed; sizing happens in the onload)
+
+  if (styleParts.length > 0) {
+    // Merge with any existing style attribute or add a new one.
+    if (/\bstyle="/.test(result)) {
+      result = result.replace(/\bstyle="([^"]*)"/, (m, existing) =>
+        `style="${existing}; ${styleParts.join('; ')}"`
+      );
+    } else {
+      result = result.replace('<img ', `<img style="${styleParts.join('; ')}" `);
+    }
+  }
+
+  // class attribute — animation classes
+  if (animClass) {
+    if (/\bclass="/.test(result)) {
+      result = result.replace(/\bclass="([^"]*)"/, (m, existing) =>
+        `class="${existing} ${animClass}"`
+      );
+    } else {
+      result = result.replace('<img ', `<img class="${animClass}" `);
+    }
+  }
+
+  // Wide emote: mark with data-wide and attach an onload that doubles the rendered pixel width.
+  // data-wide lets fixZeroWidthEmotes detect and scale ZW overlays when the base is widened.
+  // The onload handler uses the .zero-width_container height as the reference for ZW emotes
+  // (they are position:absolute so offsetHeight is unreliable without the container).
+  if (applyWide) {
+    result = result.replace('<img ', '<img data-wide="true" ');
+    const onload = `this.onload=null;` +
+      `var c=this.closest('.zero-width_container');` +
+      `var h=(c?c.offsetHeight:0)||this.offsetHeight||this.naturalHeight;` +
+      `var w=Math.round(h*(this.naturalWidth/this.naturalHeight));` +
+      `this.style.width=(w*2)+'px';` +
+      `this.style.height=h+'px';`;
+    if (/\bonload="/.test(result)) {
+      result = result.replace(/\bonload="([^"]*)"/, (m, existing) =>
+        `onload="${existing} ${onload}"`
+      );
+    } else {
+      result = result.replace('<img ', `<img onload="${onload}" `);
+    }
+  }
+
+  return result;
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 Chat = {
   info: {
@@ -111,10 +255,16 @@ Chat = {
         : false,
     bots: ["streamelements", "streamlabs", "nightbot", "moobot", "fossabot"],
     nicknameColor: "cN" in $.QueryString ? $.QueryString.cN : false,
-    regex:
-      "regex" in $.QueryString
-        ? new RegExp(decodeURIComponent($.QueryString.regex))
-        : null,
+    filters: (() => {
+      if ("filters" in $.QueryString) {
+        const parsed = parseFiltersQuery($.QueryString.filters);
+        if (parsed) return parsed;
+      }
+      if ("regex" in $.QueryString) {
+        return legacyRegexFilter($.QueryString.regex);
+      }
+      return [];
+    })(),
     emoteScale:
       "emoteScale" in $.QueryString ? parseInt($.QueryString.emoteScale) : 1,
     readable:
@@ -168,6 +318,10 @@ Chat = {
     normalChat:
       "normal_chat" in $.QueryString
         ? $.QueryString.normal_chat.toLowerCase() === "true"
+        : false,
+    linkUrls:
+      "link_urls" in $.QueryString
+        ? $.QueryString.link_urls.toLowerCase() === "true"
         : false,
     streamerChat:
       "streamer_chat" in $.QueryString
@@ -227,6 +381,28 @@ Chat = {
     sharedChatInitializing: false,
     sharedChatChannels: {},  // { channelID: { name, emotes, ffzModBadge, ffzVipBadge, profileImage, sevenConn } }
     sharedChatEventSource: null,
+    redeemEventSource: null,
+    // Platform indicators
+    platformIndicator:
+      "platform_indicator" in $.QueryString
+        ? $.QueryString.platform_indicator.toLowerCase()
+        : "none",
+    piSides:
+      "pi_sides" in $.QueryString
+        ? $.QueryString.pi_sides.toLowerCase()
+        : "left",
+    piStyle:
+      "pi_style" in $.QueryString
+        ? $.QueryString.pi_style.toLowerCase()
+        : "solid",
+    piThickness:
+      "pi_thickness" in $.QueryString
+        ? parseInt($.QueryString.pi_thickness) || 3
+        : 3,
+    piRadius:
+      "pi_radius" in $.QueryString
+        ? parseInt($.QueryString.pi_radius) || 0
+        : 0,
   },
 
   loadEmotes: function (channelID) {
@@ -332,6 +508,11 @@ Chat = {
       return;
     }
 
+    // Don't open a second SSE connection if one is already active
+    if (Chat.info.sharedChatEventSource) {
+      return;
+    }
+
     // Subscribe to shared chat events (update and end only)
     fetch(`/api/shared-chat/subscribe?channel_id=${Chat.info.channelID}`);
 
@@ -380,6 +561,41 @@ Chat = {
             console.log('[TEMP DEBUG][SharedChat] Session ended');
             Chat.cleanupAllSharedChat();
             break;
+        }
+      } catch (e) {
+        console.error('[TEMP DEBUG][SharedChat] Error processing SSE event:', e);
+      }
+    };
+
+    eventSource.onerror = function (err) {
+      console.error('[TEMP DEBUG][SharedChat] SSE connection error:', err);
+    };
+  },
+
+  // TEMPORARY DEBUG - remove before production
+  startRedeemListener: function () {
+    if (!Chat.info.channelID) {
+      console.log('[TEMP DEBUG][Redeems] No channelID, skipping redeem SSE listener');
+      return;
+    }
+
+    if (Chat.info.redeemEventSource) {
+      return;
+    }
+
+    fetch(`/api/redeems/subscribe?channel_id=${Chat.info.channelID}`);
+
+    const eventSource = new EventSource(`/api/redeems/events?channel_id=${Chat.info.channelID}`);
+    Chat.info.redeemEventSource = eventSource;
+
+    eventSource.onmessage = function (event) {
+      try {
+        const data = JSON.parse(event.data);
+
+        switch (data.type) {
+          case 'connected':
+            console.log('[TEMP DEBUG][Redeems] SSE connected for channel', Chat.info.channelID);
+            break;
 
           case 'redeem': {
             // Cache the reward name and cost
@@ -393,7 +609,6 @@ Chat = {
               var remaining = [];
               Chat.info.redeemQueue.forEach(function (queued) {
                 if (queued.rewardId === data.reward_id) {
-                  // Inject reward metadata into the original IRC tags and render
                   queued.tags["_reward_title"] = data.reward_title;
                   queued.tags["_reward_cost"] = data.reward_cost || 0;
                   Chat.write(queued.nick, queued.tags, queued.messageText, "twitch");
@@ -419,14 +634,12 @@ Chat = {
                 "_reward_cost": data.reward_cost || 0
               };
 
-              // Fetch user color from Twitch API + load 7TV paints before rendering
               var redeemNick = data.user_login;
               var redeemUserId = data.user_id;
               var renderRedeem = function () {
                 Chat.write(redeemNick, redeemInfo, "", "twitch");
               };
 
-              // Fetch color and paints in parallel, then render
               var colorDone = false, paintDone = false;
               var tryRender = function () {
                 if (colorDone && paintDone) renderRedeem();
@@ -447,7 +660,6 @@ Chat = {
 
               if (redeemUserId && !Chat.info.seventvPaints[redeemNick]) {
                 Chat.loadUserPaints(redeemNick, redeemUserId);
-                // loadUserPaints is async, give it a moment then render
                 setTimeout(function () {
                   paintDone = true;
                   tryRender();
@@ -462,12 +674,12 @@ Chat = {
           }
         }
       } catch (e) {
-        console.error('[TEMP DEBUG][SharedChat] Error processing SSE event:', e);
+        console.error('[TEMP DEBUG][Redeems] Error processing SSE event:', e);
       }
     };
 
     eventSource.onerror = function (err) {
-      console.error('[TEMP DEBUG][SharedChat] SSE connection error:', err);
+      console.error('[TEMP DEBUG][Redeems] SSE connection error:', err);
     };
   },
 
@@ -888,6 +1100,12 @@ Chat = {
         Chat.loadEmotes(Chat.info.channelID);
         seven_ws(Chat.info.channel);
 
+        // Streamer chat mode: start the dedicated redeem SSE listener immediately
+        // so channel point redemptions arrive even without a shared chat session.
+        if (Chat.info.streamerChat) {
+          Chat.startRedeemListener();
+        }
+
         client_id = res.client_id;
 
         // Load channel colors
@@ -915,7 +1133,7 @@ Chat = {
       }
 
       // Load CSS
-      let size = sizes[Chat.info.size - 1];
+      let size = sizes[Chat.info.size]; // 0=tiny,1=small,2=medium,3=large
       var font;
       if (typeof Chat.info.font === "number") {
         font = fonts[Chat.info.font];
@@ -924,7 +1142,9 @@ Chat = {
         loadCustomFont(Chat.info.font);
       }
 
-      if (Chat.info.size == 1) {
+      if (Chat.info.size == 0) {
+        Chat.info.seven_scale = 1; // 14/14
+      } else if (Chat.info.size == 1) {
         Chat.info.seven_scale = 20 / 14;
       } else if (Chat.info.size == 2) {
         Chat.info.seven_scale = 34 / 14;
@@ -974,7 +1194,6 @@ Chat = {
         Chat.info.normalChat = false;
         appendCSS("variant", "streamerchat");
         document.body.classList.add("streamerchat");
-        if (typeof StreamerChat !== "undefined") StreamerChat.init();
       }
 
       appendCSS("size", size);
@@ -1022,6 +1241,12 @@ Chat = {
         // Update viewport to accommodate scaling
         document.documentElement.style.setProperty('--inv-scale', 1 / Chat.info.scale);
       }
+
+      // Apply platform indicator body classes from URL params
+      applyPlatformIndicator(Chat.info.platformIndicator, Chat.info.piSides, Chat.info.piStyle, Chat.info.piThickness, Chat.info.piRadius);
+
+      // Apply saved display settings (streamer chat) — runs after all URL-param CSS so replaceCSS properly overrides
+      if (Chat.info.streamerChat && typeof StreamerChat !== "undefined") StreamerChat.init();
 
       // Load badges
       TwitchAPI("/chat/badges/global").done(function (res) {
@@ -1648,15 +1873,36 @@ Chat = {
         return;
       }
 
-      if (Chat.info.regex) {
-        if (doesStringMatchPattern(message, Chat.info)) {
-          return;
-        }
+      // Sub/resub/giftsub notification: styled notification line
+      if (info["_sub_notification"]) {
+        var $subLine = $("<div></div>");
+        $subLine.addClass("chat_line sub-notification");
+        if (Chat.info.animate) $subLine.addClass("animate");
+        $subLine.attr("data-nick", nick);
+        $subLine.attr("data-time", Date.now());
+        $subLine.attr("data-id", info.id || ("sub-" + Date.now()));
+
+        var $subContent = $("<span class='sub-notification-content'></span>");
+        $subContent.append("<svg class='sub-star-icon' viewBox='0 0 20 20'><path fill='currentColor' d='M10 1.5l2.47 5.01 5.53.8-4 3.9.94 5.49L10 14.27l-4.94 2.43.94-5.49-4-3.9 5.53-.8z'/></svg>");
+        $subContent.append("<span class='sub-notification-text'>" + escapeHtml(message) + "</span>");
+
+        $subLine.append($subContent);
+        Chat.info.lines.push($subLine.wrap("<div>").parent().html());
+        return;
+      }
+
+      if (Chat.info.compiledFilters && Chat.info.compiledFilters.length) {
+        const filterResult = applyFilters(message, Chat.info.compiledFilters);
+        if (filterResult.hidden) return;
+        message = filterResult.message;
       }
       var $chatLine = $("<div></div>");
       $chatLine.addClass("chat_line");
       if (Chat.info.animate) {
         $chatLine.addClass("animate");
+      }
+      if (service) {
+        $chatLine.addClass("platform-" + service);
       }
       $chatLine.attr("data-nick", nick);
       $chatLine.attr("data-time", Date.now());
@@ -1664,6 +1910,12 @@ Chat = {
       if (info["user-id"]) $chatLine.attr("data-user-id", info["user-id"]);
       var $userInfo = $("<span></span>");
       $userInfo.addClass("user_info");
+
+      // Platform indicator badge (img, hidden by default — CSS pi-* body classes control visibility)
+      var $pi = $('<img alt="" class="badge platform-indicator platform-' + (service || '') + '">');
+      if (service === "twitch") $pi.attr("src", TWITCH_BADGE_SRC);
+      else if (service === "youtube") $pi.attr("src", YOUTUBE_BADGE_SRC);
+      $userInfo.append($pi);
 
       // if (service == "youtube") {
       //     $userInfo.append('<span id="service" style="color:red";>> | </span>')
@@ -1771,7 +2023,7 @@ Chat = {
             if (badge.color) $badge.css("background-color", badge.color);
             if (badge.description === "Bot" && info.mod === "1") {
               $badge.css("background-color", "rgb(0, 173, 3)");
-              $modBadge.remove();
+              if ($modBadge) $modBadge.remove();
             }
             $badge.attr("src", badge.url);
             if (badge.description) $badge.attr("data-name", badge.description);
@@ -1974,9 +2226,25 @@ Chat = {
 
       message = escapeHtml(message);
       const words = message.split(/\s+/);
+      const twitchEmotesInMap = new Set();
       const processedWords = words.map(word => {
         let replacedWord = word;
         let isReplaced = false;
+
+        // ── Modifier detection (MUST be first: BTTV/FFZ register these tokens
+        //    as real emotes, so the lookup below would otherwise eat them) ──
+        if (BTTV_MODIFIER_SET.has(word)) {
+          return { word, isReplaced: false, isBttvModifier: true, modifierType: word };
+        }
+        if (FFZ_MODIFIER_SET.has(word)) {
+          return { word, isReplaced: false, isFfzModifier: true, modifierType: word };
+        }
+
+        // Prioritize Twitch emotes: skip third-party lookup if this word is a Twitch emote
+        if (replacements[word]) {
+          twitchEmotesInMap.add(word);
+          return { word: replacements[word], isReplaced: true };
+        }
 
         // Check personal emotes if not YouTube
         if (!isReplaced && service !== "youtube" && Chat.info.seventvPersonalEmotes[info["user-id"]]) {
@@ -2018,10 +2286,44 @@ Chat = {
         return { word: replacedWord, isReplaced };
       });
 
-      message = processedWords.reduce((acc, curr, index) => {
+      // ── Modifier assignment: backwards scan for BTTV (before emote),
+      //    forwards scan for FFZ (after emote). ──────────────────────────────
+      for (let i = 0; i < processedWords.length; i++) {
+        const entry = processedWords[i];
+        if (!entry.isReplaced) continue;
+
+        // Backwards scan: consecutive BTTV modifiers immediately before this emote.
+        const bttvMods = [];
+        let k = i - 1;
+        while (k >= 0 && processedWords[k].isBttvModifier && !processedWords[k].consumed) {
+          bttvMods.unshift(processedWords[k].modifierType);
+          processedWords[k].consumed = true;
+          k--;
+        }
+
+        // Forwards scan: consecutive FFZ modifiers immediately after this emote.
+        const ffzMods = [];
+        let j = i + 1;
+        while (j < processedWords.length && processedWords[j].isFfzModifier && !processedWords[j].consumed) {
+          ffzMods.push(processedWords[j].modifierType);
+          processedWords[j].consumed = true;
+          j++;
+        }
+
+        // allMods order: [farthest-FFZ … closest-FFZ, farthest-BTTV … closest-BTTV]
+        // → in applyEmoteModifiers "last-one-wins", BTTV (closest to emote) takes priority.
+        const allMods = [...[...ffzMods].reverse(), ...bttvMods];
+        if (allMods.length > 0) {
+          entry.word = applyEmoteModifiers(entry.word, allMods);
+        }
+      }
+      const filteredWords = processedWords.filter(e => !e.consumed);
+      // ─────────────────────────────────────────────────────────────────────
+
+      message = filteredWords.reduce((acc, curr, index) => {
         if (index === 0) return curr.word;
 
-        if (curr.isReplaced && processedWords[index - 1].isReplaced) {
+        if (curr.isReplaced && filteredWords[index - 1].isReplaced) {
           return acc + curr.word;
         } else {
           return acc + ' ' + curr.word;
@@ -2069,6 +2371,7 @@ Chat = {
       });
 
       replacementKeys.forEach((replacementKey) => {
+        if (twitchEmotesInMap.has(replacementKey)) return;
         var regex = new RegExp(
           "(" + escapeRegExp(replacementKey) + ")",
           "g"
@@ -2244,6 +2547,11 @@ Chat = {
 
       // Finalize the message HTML
       $message.html(message);
+
+      // URL highlighting / linkification
+      if (Chat.info.streamerChat || Chat.info.linkUrls) {
+        linkifyUrls($message, Chat.info.streamerChat);
+      }
 
       // Text wrapping for per-word stroke removed — stroke filter now applied at .message level via CSS
 
@@ -3048,19 +3356,57 @@ Chat = {
               Chat.write(nick, message.tags, message.params[1], "twitch");
               return;
 
-            case "USERNOTICE":
-              // Announcements are sent as USERNOTICE with msg-id=announcement.
-              if (message.tags && message.tags["msg-id"] === "announcement" && message.params[1]) {
-                var aNick = message.tags["login"] || (message.prefix ? message.prefix.split("!")[0] : "");
-                Chat.write(aNick, message.tags, message.params[1], "twitch");
+            case "USERNOTICE": {
+              var uTags = message.tags || {};
+              var uMsgId = uTags["msg-id"];
+              var uNick = uTags["login"] || (message.prefix ? message.prefix.split("!")[0] : "");
+
+              // Announcements always show
+              if (uMsgId === "announcement" && message.params[1]) {
+                Chat.write(uNick, uTags, message.params[1], "twitch");
+                return;
+              }
+
+              // Subscriptions and gift subs: only show in streamer chat mode
+              if (Chat.info.streamerChat && (uMsgId === "sub" || uMsgId === "resub" || uMsgId === "subgift" || uMsgId === "submysterygift")) {
+                // Decode system-msg (IRC tag values use \s for space, \\ for backslash)
+                var rawSysMsg = (uTags["system-msg"] || "").replace(/\\s/g, " ").replace(/\\\\/g, "\\").trim();
+                var subDisplayText = rawSysMsg;
+                if (!subDisplayText) {
+                  var uSubPlan = uTags["msg-param-sub-plan"] || "1000";
+                  var uTier = uSubPlan === "Prime" ? "Prime" : uSubPlan === "3000" ? "Tier 3" : uSubPlan === "2000" ? "Tier 2" : "Tier 1";
+                  var uDName = uTags["display-name"] || uNick;
+                  if (uMsgId === "sub") {
+                    subDisplayText = uDName + " just subscribed (" + uTier + ")!";
+                  } else if (uMsgId === "resub") {
+                    var uMonths = uTags["msg-param-cumulative-months"] || "?";
+                    subDisplayText = uDName + " resubscribed for " + uMonths + " months (" + uTier + ")!";
+                  } else if (uMsgId === "subgift") {
+                    var uRecipient = uTags["msg-param-recipient-display-name"] || uTags["msg-param-recipient-user-name"] || "?";
+                    subDisplayText = uDName + " gifted a " + uTier + " sub to " + uRecipient + "!";
+                  } else if (uMsgId === "submysterygift") {
+                    var uCount = uTags["msg-param-mass-gift-count"] || "?";
+                    subDisplayText = uDName + " is gifting " + uCount + " " + uTier + " subs!";
+                  }
+                } else if (uMsgId === "resub" && message.params[1]) {
+                  // Append the subscriber's optional message
+                  subDisplayText += " \u201C" + message.params[1] + "\u201D";
+                }
+                if (subDisplayText) {
+                  uTags["_sub_notification"] = true;
+                  Chat.write(uNick, uTags, subDisplayText, "twitch");
+                }
               }
               return;
+            }
           }
         });
       };
     });
   },
 };
+
+Chat.info.compiledFilters = compileFilters(Chat.info.filters);
 
 $(document).ready(function () {
   Chat.connect(

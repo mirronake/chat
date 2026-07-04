@@ -41,6 +41,55 @@ function appendCSS(type, name) {
   }).appendTo("head");
 }
 
+function removeCSS(type) {
+  $("link.chat_" + type).remove();
+}
+
+function replaceCSS(type, name) {
+  removeCSS(type);
+  appendCSS(type, name);
+}
+
+// Remove all emoteScale CSS links regardless of which size prefix is active.
+function removeEmoteScaleCSS() {
+  sizes.forEach(function (s) { removeCSS("emoteScale_" + s); });
+}
+
+/**
+ * Apply platform indicator body classes and CSS vars.
+ * @param {string} mode  - "none"|"badge"|"minimal"|"outline"
+ * @param {string} sides - comma-separated sides, e.g. "left" or "left,bottom"
+ * @param {string} style - "solid"|"fade"
+ * @param {number} thickness
+ * @param {number} radius
+ */
+function applyPlatformIndicator(mode, sides, style, thickness, radius) {
+  // Remove all previous pi-* classes
+  document.body.classList.forEach(function (c) {
+    if (c.startsWith("pi-")) document.body.classList.remove(c);
+  });
+
+  if (!mode || mode === "none") return;
+
+  document.body.classList.add("pi-" + mode);
+
+  if (mode === "outline") {
+    document.body.classList.add("pi-outline-" + style);
+    var sideList = (sides || "left").split(",");
+    var th = (thickness || 3) + "px";
+    document.documentElement.style.setProperty("--pi-top", sideList.includes("top") ? th : "0px");
+    document.documentElement.style.setProperty("--pi-right", sideList.includes("right") ? th : "0px");
+    document.documentElement.style.setProperty("--pi-bottom", sideList.includes("bottom") ? th : "0px");
+    document.documentElement.style.setProperty("--pi-left", sideList.includes("left") ? th : "0px");
+    document.documentElement.style.setProperty("--pi-radius", (radius || 0) + "px");
+    if (style === "fade") {
+      // For fade, only one side is used; pick the first one
+      var activeSide = sideList[0] || "left";
+      document.body.classList.add("pi-fade-" + activeSide);
+    }
+  }
+}
+
 const toTitleCase = (phrase) => {
   return phrase
     .toLowerCase()
@@ -49,12 +98,27 @@ const toTitleCase = (phrase) => {
     .join(' ');
 };
 
-function loadCustomFont(name) {
+async function loadCustomFont(name) {
   const fontName = toTitleCase(name);
+  const familyParam = fontName.replace(/ /g, '+');
+  const variableUrl = `https://fonts.googleapis.com/css2?family=${familyParam}:wght@100..900&display=swap`;
+  const basicUrl = `https://fonts.googleapis.com/css2?family=${familyParam}&display=swap`;
+
+  let url = basicUrl;
+  try {
+    const res = await fetch(variableUrl);
+    if (res.ok) url = variableUrl;
+  } catch (e) { /* network error — use basic */ }
+
+  // Remove any previous custom-font link so re-applying doesn't stack
+  document.querySelectorAll('link[data-custom-font]').forEach(el => el.remove());
+
   const link = document.createElement('link');
   link.rel = 'stylesheet';
-  link.href = `https://fonts.googleapis.com/css?family=${fontName}`;
+  link.href = url;
+  link.setAttribute('data-custom-font', fontName);
   document.head.appendChild(link);
+
   $("#chat_container, #streamer_auth_bar, #streamer_bar, #command_autocomplete, .sc-modal-overlay, #mod_settings_panel, #sc-tooltip")
     .css("font-family", fontName);
 }
@@ -69,6 +133,51 @@ function escapeHtml(message) {
     .replace(/&/g, "&amp;")
     .replace(/(<)(?!3)/g, "&lt;")
     .replace(/(>)(?!\()/g, "&gt;");
+}
+
+// Linkify URLs in a jQuery element's text nodes.
+// If clickable=true, wraps them in <a> tags (opens in new tab).
+// If clickable=false, wraps them in <span class="chat-url"> for styling only.
+function linkifyUrls($element, clickable) {
+  var urlRegex = /(https?:\/\/\S+)/g;
+  $element.contents().each(function () {
+    var node = this;
+    if (node.nodeType === 3) { // TEXT_NODE
+      var text = node.nodeValue;
+      if (!urlRegex.test(text)) { urlRegex.lastIndex = 0; return; }
+      urlRegex.lastIndex = 0;
+      // Split on captured URLs: odd indices are URLs, even are plain text
+      var parts = text.split(urlRegex);
+      var fragment = document.createDocumentFragment();
+      for (var i = 0; i < parts.length; i++) {
+        if (i % 2 === 0) {
+          if (parts[i]) fragment.appendChild(document.createTextNode(parts[i]));
+        } else {
+          // Strip trailing punctuation that's unlikely part of the URL
+          var url = parts[i].replace(/[.,!?;:'")\]>]+$/, '');
+          var trailing = parts[i].slice(url.length);
+          if (clickable) {
+            var a = document.createElement('a');
+            a.href = url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.className = 'chat-url';
+            a.textContent = url;
+            fragment.appendChild(a);
+          } else {
+            var span = document.createElement('span');
+            span.className = 'chat-url';
+            span.textContent = url;
+            fragment.appendChild(span);
+          }
+          if (trailing) fragment.appendChild(document.createTextNode(trailing));
+        }
+      }
+      node.parentNode.replaceChild(fragment, node);
+    } else if (node.nodeType === 1 && node.nodeName !== 'IMG' && node.nodeName !== 'A') {
+      linkifyUrls($(node), clickable);
+    }
+  });
 }
 
 // function TwitchOAuth() {
@@ -190,6 +299,202 @@ function doesStringMatchPattern(stringToTest, info) {
     console.error("No valid regex pattern defined in info object.");
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Message filter engine
+// ---------------------------------------------------------------------------
+
+function parseFiltersQuery(raw) {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (e) {
+    console.error("Failed to parse filters query param:", e);
+    return null;
+  }
+}
+
+function legacyRegexFilter(raw) {
+  if (!raw) return null;
+  return [
+    {
+      pattern: raw,
+      type: "regex",
+      action: "hide",
+      replacement: "",
+      caseSensitive: true,
+    },
+  ];
+}
+
+function splitPatternTerms(pattern) {
+  // Split on commas not preceded by a backslash. Commas escaped with \ stay
+  // literal and are handled by the wildcard parser.
+  return pattern
+    .split(/(?<!\\),/)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+}
+
+function wildcardTermToRegex(term, captureWildcards) {
+  let regex = "";
+  let captureCount = 0;
+  let escaped = false;
+  for (const ch of term) {
+    if (escaped) {
+      // The escape consumed the backslash; emit the escaped character literally.
+      regex += escapeRegExp(ch);
+      escaped = false;
+    } else if (ch === "\\") {
+      escaped = true;
+    } else if (ch === "*") {
+      if (captureWildcards) {
+        regex += "(\\S*)";
+        captureCount++;
+      } else {
+        regex += "(?:\\S*)";
+      }
+    } else if (ch === "?") {
+      regex += "\\S";
+    } else {
+      regex += escapeRegExp(ch);
+    }
+  }
+  return { source: regex, captureCount };
+}
+
+function compileFilters(filters) {
+  if (!Array.isArray(filters)) return [];
+  const compiled = [];
+
+  for (const f of filters) {
+    if (!f || typeof f.pattern !== "string" || !f.pattern.trim()) continue;
+
+    const type = f.type === "regex" ? "regex" : "wildcard";
+    const action = ["hide", "mask", "replace"].includes(f.action)
+      ? f.action
+      : "hide";
+    const replacement =
+      typeof f.replacement === "string" ? f.replacement : "";
+    const caseSensitive = !!f.caseSensitive;
+
+    const terms = splitPatternTerms(f.pattern);
+    if (terms.length === 0) continue;
+
+    const flags =
+      (caseSensitive ? "" : "i") + (action !== "hide" ? "g" : "");
+
+    try {
+      if (type === "regex") {
+        const source = terms.map((t) => `(?:${t})`).join("|");
+        const regex = new RegExp(source, flags);
+        compiled.push({
+          pattern: f.pattern,
+          type,
+          action,
+          replacement,
+          caseSensitive,
+          regex,
+        });
+      } else if (action === "replace") {
+        // Wildcard replace needs each term as its own regex so the captured
+        // wildcard segments line up with the replacement * placeholders.
+        const regexes = terms.map((term) => {
+          const converted = wildcardTermToRegex(term, true);
+          const bounded = `(?<!\\S)(?:${converted.source})(?!\\S)`;
+          return {
+            regex: new RegExp(bounded, flags),
+            captureCount: converted.captureCount,
+          };
+        });
+        compiled.push({
+          pattern: f.pattern,
+          type,
+          action,
+          replacement,
+          caseSensitive,
+          regexes,
+        });
+      } else {
+        const source = terms
+          .map((term) => `(?:${wildcardTermToRegex(term, false).source})`)
+          .join("|");
+        // Match only within a single whitespace-delimited word.
+        const bounded = `(?<!\\S)(?:${source})(?!\\S)`;
+        const regex = new RegExp(bounded, flags);
+        compiled.push({
+          pattern: f.pattern,
+          type,
+          action,
+          replacement,
+          caseSensitive,
+          regex,
+        });
+      }
+    } catch (e) {
+      console.error("Invalid filter pattern:", f.pattern, e);
+      continue;
+    }
+  }
+
+  return compiled;
+}
+
+function wildcardReplace(replacement, captureCount, match, ...args) {
+  const captures = args.slice(0, captureCount);
+  let result = "";
+  let escaped = false;
+  let captureIndex = 0;
+  for (const ch of replacement) {
+    if (escaped) {
+      result += ch;
+      escaped = false;
+    } else if (ch === "\\") {
+      escaped = true;
+    } else if (ch === "*") {
+      if (captureIndex < captures.length) {
+        result += captures[captureIndex++];
+      } else {
+        result += "*";
+      }
+    } else {
+      result += ch;
+    }
+  }
+  return result;
+}
+
+function applyFilters(message, compiledFilters) {
+  if (!compiledFilters || compiledFilters.length === 0) {
+    return { hidden: false, message };
+  }
+
+  let current = message;
+  for (const filter of compiledFilters) {
+    if (filter.action === "hide") {
+      if (filter.regex.test(current)) {
+        return { hidden: true, message: current };
+      }
+    } else if (filter.action === "mask") {
+      current = current.replace(filter.regex, (match) =>
+        "*".repeat(match.length)
+      );
+    } else if (filter.action === "replace") {
+      if (filter.regexes) {
+        for (const entry of filter.regexes) {
+          current = current.replace(entry.regex, (match, ...args) =>
+            wildcardReplace(filter.replacement, entry.captureCount, match, ...args)
+          );
+        }
+      } else {
+        current = current.replace(filter.regex, () => filter.replacement);
+      }
+    }
+  }
+
+  return { hidden: false, message: current };
 }
 
 function addRandomQueryString(url) {
@@ -429,7 +734,8 @@ async function fixZeroWidthEmotes(messageId) {
             return img.complete
               ? Promise.resolve()
               : new Promise((resolve) => {
-                img.onload = img.onerror = resolve;
+                img.addEventListener('load', resolve);
+                img.addEventListener('error', resolve);
               });
           })
         );
@@ -466,6 +772,28 @@ async function fixZeroWidthEmotes(messageId) {
 
               // Set the width of the zero-width container to the widest emote
               firstContainer.style.width = `${maxWidth}px`;
+
+              // If the base emote has w! modifier: compute doubled dimensions from natural
+              // ratios here (avoids the onload-vs-microtask race for cached images) then
+              // scale ZW overlays to match the wider base.
+              const wideBase = currentSet.find(e => !e.classList.contains('zero-width') && e.dataset.wide === 'true');
+              if (wideBase) {
+                const containerH = firstContainer.offsetHeight;
+                if (containerH && wideBase.naturalWidth && wideBase.naturalHeight) {
+                  const baseW = Math.round(containerH * wideBase.naturalWidth / wideBase.naturalHeight);
+                  wideBase.style.width = (baseW * 2) + 'px';
+                  wideBase.style.height = containerH + 'px';
+                  wideBase.onload = null; // prevent late-firing onload from re-overwriting
+                  firstContainer.style.width = (baseW * 2) + 'px';
+                }
+                currentSet.filter(e => e.classList.contains('zero-width')).forEach(zw => {
+                  if (containerH && zw.naturalWidth && zw.naturalHeight) {
+                    const scaledW = Math.round(containerH * zw.naturalWidth / zw.naturalHeight);
+                    zw.style.width = (scaledW * 2) + 'px';
+                    zw.style.height = containerH + 'px';
+                  }
+                });
+              }
 
               firstContainer.classList.remove("staging");
               firstContainer.querySelectorAll("img.emote.staging").forEach((em) => {
@@ -509,6 +837,26 @@ async function fixZeroWidthEmotes(messageId) {
           });
 
           firstContainer.style.width = `${maxWidth}px`;
+
+          // Same wide-base handling for the final set
+          const wideBaseFinal = currentSet.find(e => !e.classList.contains('zero-width') && e.dataset.wide === 'true');
+          if (wideBaseFinal) {
+            const containerH = firstContainer.offsetHeight;
+            if (containerH && wideBaseFinal.naturalWidth && wideBaseFinal.naturalHeight) {
+              const baseW = Math.round(containerH * wideBaseFinal.naturalWidth / wideBaseFinal.naturalHeight);
+              wideBaseFinal.style.width = (baseW * 2) + 'px';
+              wideBaseFinal.style.height = containerH + 'px';
+              wideBaseFinal.onload = null;
+              firstContainer.style.width = (baseW * 2) + 'px';
+            }
+            currentSet.filter(e => e.classList.contains('zero-width')).forEach(zw => {
+              if (containerH && zw.naturalWidth && zw.naturalHeight) {
+                const scaledW = Math.round(containerH * zw.naturalWidth / zw.naturalHeight);
+                zw.style.width = (scaledW * 2) + 'px';
+                zw.style.height = containerH + 'px';
+              }
+            });
+          }
 
           firstContainer.classList.remove("staging");
           firstContainer.querySelectorAll("img.emote.staging").forEach((em) => {

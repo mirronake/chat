@@ -235,7 +235,8 @@ function centerUpdate() {
 function resetForm() {
     $channel.val("");
     $ytChannel.val("");
-    $regex.val("");
+    $filterList.empty();
+    addFilterRow();
     $blockedUsers.val("");
     $allowedUsers.val("");
     $size.val("3");
@@ -286,9 +287,10 @@ function resetForm() {
     $highlightMentionColor.val("#ffff00");
     $(".highlight-mention-color-field").hide();
     $normalChat.prop("checked", false);
+    $platformIndicator.val("none");
+    $(".pi-outline-options").hide();
 
-    // Re-enable all disabled fields
-    $center.prop("disabled", false);
+    // Re-enable all disabled fields    $center.prop("disabled", false);
     $normalChat.prop("disabled", false);
     $paints.prop("disabled", false);
     $colon.prop("disabled", false);
@@ -407,17 +409,10 @@ function generateURL(event) {
     let currentUrl = url.origin + url.pathname;
     currentUrl = currentUrl.replace(/\/+$/, "");
 
-    var generatedUrl = "";
-    if ($regex.val() == "") {
-        generatedUrl = currentUrl + "/v2/?channel=" + $channel.val();
-    } else {
-        generatedUrl =
-            currentUrl +
-            "/v2/?channel=" +
-            $channel.val() +
-            "&regex=" +
-            encodeURIComponent($regex.val());
-    }
+    const filters = collectFilters({ validate: true });
+    if (filters === null) return;
+
+    var generatedUrl = currentUrl + "/v2/?channel=" + $channel.val();
 
     var selectedFont;
     if ($font.val() === "12") {
@@ -452,6 +447,7 @@ function generateURL(event) {
         disable_pruning: $pruning.is(":checked"),
         block: $blockedUsers.val().replace(/\s+/g, ""),
         allow: $allowedUsers.val().replace(/\s+/g, ""),
+        filters: filters.length > 0 ? JSON.stringify(filters) : false,
         yt: $ytChannel.val().replace('@', ''),
         yt_emotes: !$ytEmotes.is(":checked") ? "false" : false,
         sms: $sms.is(":checked"),
@@ -467,7 +463,14 @@ function generateURL(event) {
         show_redeems: !$showRedeems.is(":checked") ? "false" : false,
         highlight_mentions: $highlightMentions.is(":checked"),
         highlight_mention_color: $highlightMentions.is(":checked") ? $highlightMentionColor.val().replace("#", "") : false,
+        link_urls: $linkUrls.is(":checked"),
         normal_chat: $normalChat.is(":checked"),
+        streamer_chat: $streamerChat.is(":checked") ? "true" : false,
+        platform_indicator: $platformIndicator.val() !== "none" ? $platformIndicator.val() : false,
+        pi_style: $platformIndicator.val() === "outline" ? $piStyle.val() : false,
+        pi_sides: $platformIndicator.val() === "outline" ? $piSides.val() : false,
+        pi_thickness: ($platformIndicator.val() === "outline" && $piThickness.val() !== "3") ? $piThickness.val() : false,
+        pi_radius: ($platformIndicator.val() === "outline" && $piRadius.val() !== "0") ? $piRadius.val() : false,
     };
 
     const params = encodeQueryData(data);
@@ -520,6 +523,8 @@ function updatePreview() {
         const $frame = $('#preview-frame');
         if (!$frame.length) return;
 
+        const filters = collectFilters({ validate: false });
+
         var selectedFont;
         if ($font.val() === "12") {
             selectedFont = $custom_font.val();
@@ -554,6 +559,7 @@ function updatePreview() {
             sms: $sms.is(":checked"),
             message_image: $sms.is(":checked") ? ($messageImage.val() || false) : false,
             big_emotes: $bigEmotes.is(":checked"),
+            filters: filters.length > 0 ? JSON.stringify(filters) : false,
             off_commands: disabledCommands.length > 0 ? disabledCommands.join(",") : false,
             pronoun_color_mode: $pronounColorMode.val() !== "default" ? $pronounColorMode.val() : false,
             pronoun_single_color1: $pronounColorMode.val() === "single" ? $pronounColor1.val() : false,
@@ -564,7 +570,14 @@ function updatePreview() {
             show_redeems: !$showRedeems.is(":checked") ? "false" : false,
             highlight_mentions: $highlightMentions.is(":checked"),
             highlight_mention_color: $highlightMentions.is(":checked") ? $highlightMentionColor.val().replace("#", "") : false,
+            link_urls: $linkUrls.is(":checked"),
             normal_chat: $normalChat.is(":checked"),
+            streamer_chat: $streamerChat.is(":checked") ? "true" : false,
+            platform_indicator: $platformIndicator.val() !== "none" ? $platformIndicator.val() : false,
+            pi_style: $platformIndicator.val() === "outline" ? $piStyle.val() : false,
+            pi_sides: $platformIndicator.val() === "outline" ? $piSides.val() : false,
+            pi_thickness: ($platformIndicator.val() === "outline" && $piThickness.val() !== "3") ? $piThickness.val() : false,
+            pi_radius: ($platformIndicator.val() === "outline" && $piRadius.val() !== "0") ? $piRadius.val() : false,
         };
 
         const params = encodeQueryData(data);
@@ -621,7 +634,8 @@ const $url = $("#url");
 const $alert = $("#alert");
 const $reset = $("#reset");
 const $goBack = $("#go-back");
-const $regex = $('input[name="regex"]');
+const $filterList = $('#filter-list');
+const $addFilter = $('#add-filter');
 const $blockedUsers = $('input[name="blocked_users"]');
 const $allowedUsers = $('input[name="allowed_users"]');
 const $sms = $('input[name="sms"]');
@@ -641,7 +655,133 @@ const $gigantify = $('input[name="gigantify"]');
 const $showRedeems = $('input[name="show_redeems"]');
 const $highlightMentions = $('input[name="highlight_mentions"]');
 const $highlightMentionColor = $('input[name="highlight_mention_color"]');
+const $linkUrls = $('input[name="link_urls"]');
 const $normalChat = $('input[name="normal_chat"]');
+const $streamerChat = $('input[name="streamer_chat"]');
+const $platformIndicator = $('select[name="platform_indicator"]');
+const $piStyle = $('select[name="pi_style"]');
+const $piSides = $('select[name="pi_sides"]');
+const $piThickness = $('select[name="pi_thickness"]');
+const $piRadius = $('select[name="pi_radius"]');
+
+// ---------------------------------------------------------------------------
+// Message filters
+// ---------------------------------------------------------------------------
+
+function escapeRegexChar(c) {
+    return c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function splitFilterTerms(pattern) {
+    // Split on commas not preceded by a backslash.
+    return pattern
+        .split(/(?<!\\),/)
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0);
+}
+
+function validateFilterPattern(pattern, type) {
+    const terms = splitFilterTerms(pattern);
+    if (terms.length === 0) return true;
+    try {
+        if (type === "regex") {
+            terms.forEach((t) => new RegExp(t));
+        } else {
+            terms.forEach((term) => {
+                let regex = "";
+                let escaped = false;
+                for (const ch of term) {
+                    if (escaped) {
+                        regex += escapeRegexChar(ch);
+                        escaped = false;
+                    } else if (ch === "\\") {
+                        escaped = true;
+                    } else if (ch === "*") {
+                        regex += "\\S*";
+                    } else if (ch === "?") {
+                        regex += "\\S";
+                    } else {
+                        regex += escapeRegexChar(ch);
+                    }
+                }
+                new RegExp(`(?<!\\S)(?:${regex})(?!\\S)`);
+            });
+        }
+    } catch (e) {
+        return false;
+    }
+    return true;
+}
+
+function createFilterRow(filter) {
+    filter = filter || {};
+    const $row = $('<div class="filter-row"></div>');
+
+    const $options = $('<div class="filter-options"></div>');
+    const $type = $('<select class="filter-type"><option value="wildcard">Wildcard</option><option value="regex">Regex</option></select>').val(filter.type || "wildcard");
+    const $action = $('<select class="filter-action"><option value="hide">Hide</option><option value="mask">Asterisks</option><option value="replace">Replace</option></select>').val(filter.action || "hide");
+    const $case = $('<input type="checkbox" class="filter-case-sensitive" />').prop("checked", !!filter.caseSensitive);
+    const $caseLabel = $('<label class="filter-case-toggle" title="Case sensitive"><span>Aa</span></label>').prepend($case);
+    const $remove = $('<button type="button" class="remove-filter danger-button">&times;</button>');
+    $options.append($type, $action, $caseLabel, $remove);
+
+    const $pattern = $('<input type="text" class="filter-pattern" placeholder="Pattern(s)" />').val(filter.pattern || "");
+    const $replacement = $('<input type="text" class="filter-replacement" placeholder="Replacement" />').val(filter.replacement || "");
+
+    $row.append($options, $pattern, $replacement);
+    return $row;
+}
+
+function updateFilterRowUI($row) {
+    const action = $row.find(".filter-action").val();
+    $row.find(".filter-replacement").toggle(action === "replace");
+}
+
+function addFilterRow(filter) {
+    const $row = createFilterRow(filter);
+    $filterList.append($row);
+    updateFilterRowUI($row);
+    $row.find(".filter-action").on("change", function () {
+        updateFilterRowUI($row);
+        updatePreview();
+    });
+    $row.find(".remove-filter").on("click", function () {
+        $row.remove();
+        updatePreview();
+    });
+}
+
+function collectFilters(options) {
+    options = options || {};
+    const filters = [];
+    let invalid = false;
+    $filterList.find(".filter-row").each(function () {
+        const $row = $(this);
+        const pattern = $row.find(".filter-pattern").val().trim();
+        if (!pattern) return;
+        const type = $row.find(".filter-type").val();
+        const action = $row.find(".filter-action").val();
+        const replacement = $row.find(".filter-replacement").val();
+        const caseSensitive = $row.find(".filter-case-sensitive").is(":checked");
+        if (!validateFilterPattern(pattern, type)) {
+            if (options.validate) {
+                invalid = true;
+                return false;
+            }
+            return;
+        }
+        filters.push({ pattern, type, action, replacement, caseSensitive });
+    });
+    if (invalid) {
+        alert("One or more filter patterns are invalid. Please check your regex/wildcard syntax.");
+        return null;
+    }
+    return filters;
+}
+
+$addFilter.on("click", function () {
+    addFilterRow();
+});
 
 // Specific handlers for options with interdependencies
 $fade_bool.change(fadeOption);
@@ -658,6 +798,20 @@ $disableYTPlay.change(commandsUpdate);
 $disableYTStop.change(commandsUpdate);
 $disableIMG.change(commandsUpdate);
 $generator.submit(generateURL);
+
+// Show/hide outline sub-options based on platform indicator selection
+$platformIndicator.change(function () {
+    if ($(this).val() === "outline") {
+        $(".pi-outline-options").show();
+    } else {
+        $(".pi-outline-options").hide();
+    }
+    updatePreview();
+});
+$piStyle.change(updatePreview);
+$piSides.change(updatePreview);
+$piThickness.change(updatePreview);
+$piRadius.change(updatePreview);
 $url.click(copyUrl);
 $alert.click(showUrl);
 $reset.click(resetForm);
